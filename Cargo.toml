@@ -32,6 +32,9 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 dirs = "5.0"
 
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
 # Error handling
 anyhow = "1.0"
 thiserror = "2.0"
@@ -43,6 +46,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Audio processing
 hound = "3.5"
 byteorder = "1.5"
+
+# Time/date handling
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = "3.12"

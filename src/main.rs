@@ -2,6 +2,7 @@
 extern crate tracing;
 
 use anyhow::Result;
+use clap::Parser;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,6 +18,15 @@ mod tray;
 
 use config::Config;
 
+#[derive(Parser, Debug)]
+#[command(name = "gnome-voice-input")]
+#[command(about = "Voice input utility for GNOME desktop using Deepgram", long_about = None)]
+struct Args {
+    /// Enable debug mode to save WAV files of audio sent to Deepgram
+    #[arg(long, default_value_t = false)]
+    debug: bool,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     #[allow(dead_code)]
@@ -24,23 +34,36 @@ pub struct AppState {
     recording: Arc<Mutex<bool>>,
     transcriber: Arc<transcription::Transcriber>,
     shutdown: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    debug: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "gnome_voice_input=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                if args.debug {
+                    "gnome_voice_input=debug".into()
+                } else {
+                    "gnome_voice_input=info".into()
+                }
+            }),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
     info!("Starting GNOME Voice Input");
+    if args.debug {
+        info!("Debug mode enabled - will save WAV files to current directory");
+    }
 
     let config = Config::load()?;
     let transcriber = Arc::new(transcription::Transcriber::new(
         config.deepgram_api_key.clone(),
+        args.debug,
     ));
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -50,6 +73,7 @@ async fn main() -> Result<()> {
         recording: Arc::new(Mutex::new(false)),
         transcriber,
         shutdown: shutdown.clone(),
+        debug: args.debug,
     };
 
     let _hotkey_manager = hotkey::setup_hotkeys(&config)?;

@@ -6,18 +6,19 @@ use deepgram::{
     },
     Deepgram,
 };
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 pub struct Transcriber {
     client: Deepgram,
+    debug: bool,
 }
 
 impl Transcriber {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: String, debug: bool) -> Self {
         let client = Deepgram::new(&api_key).expect("Failed to create Deepgram client");
-        Self { client }
+        Self { client, debug }
     }
 
     pub async fn transcribe_stream(
@@ -77,6 +78,24 @@ impl Transcriber {
         // Convert raw PCM f32 to WAV format
         let wav_data = self.pcm_to_wav(&audio_data)?;
         debug!("WAV data size: {} bytes", wav_data.len());
+
+        // Save WAV file if debug mode is enabled
+        if self.debug {
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S_%3f");
+            let filename = format!("deepgram_audio_{timestamp}.wav");
+            match std::fs::File::create(&filename) {
+                Ok(mut file) => {
+                    if let Err(e) = file.write_all(&wav_data) {
+                        error!("Failed to write debug WAV file: {}", e);
+                    } else {
+                        info!("Saved debug WAV file: {}", filename);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to create debug WAV file: {}", e);
+                }
+            }
+        }
 
         let source = AudioSource::from_buffer_with_mime_type(wav_data, "audio/wav");
 
