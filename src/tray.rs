@@ -123,9 +123,7 @@ impl Tray for VoiceInputTray {
                 icon_name: "application-exit".to_string(),
                 activate: Box::new(|tray: &mut Self| {
                     info!("Quit requested from tray");
-                    tray.app_state
-                        .shutdown
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    tray.app_state.shutdown_token.cancel();
                 }),
                 enabled: true,
                 ..Default::default()

@@ -5,11 +5,12 @@ use eyre::{OptionExt, Result, WrapErr};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 pub fn capture_audio(
     audio_tx: mpsc::Sender<Vec<u8>>,
     recording: Arc<AtomicBool>,
-    shutdown: Arc<std::sync::atomic::AtomicBool>,
+    shutdown_token: CancellationToken,
     audio_config: AudioConfig,
 ) -> Result<()> {
     let host = cpal::default_host();
@@ -131,7 +132,7 @@ pub fn capture_audio(
     let mut chunks_sent = 0u64;
 
     loop {
-        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+        if shutdown_token.is_cancelled() {
             info!("Audio capture shutting down");
             break;
         }

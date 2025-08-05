@@ -9,6 +9,7 @@ use eyre::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod audio;
@@ -36,7 +37,7 @@ pub struct AppState {
     config: Config,
     recording: Arc<AtomicBool>,
     transcriber: Arc<transcription::Transcriber>,
-    shutdown: Arc<AtomicBool>,
+    shutdown_token: CancellationToken,
     #[allow(dead_code)]
     debug: bool,
 }
@@ -70,13 +71,13 @@ async fn main() -> Result<()> {
         args.debug,
     ));
 
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_token = CancellationToken::new();
 
     let app_state = AppState {
         config: config.clone(),
         recording: Arc::new(AtomicBool::new(false)),
         transcriber,
-        shutdown: shutdown.clone(),
+        shutdown_token: shutdown_token.clone(),
         debug: args.debug,
     };
 
@@ -105,14 +106,14 @@ async fn main() -> Result<()> {
     }
 
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
-    let shutdown_hotkey = shutdown.clone();
+    let hotkey_shutdown_token = shutdown_token.child_token();
 
     // Use tokio's spawn_blocking for the hotkey handler
-    tokio::task::spawn_blocking(move || {
+    let hotkey_handle = tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Handle::current();
 
         loop {
-            if shutdown_hotkey.load(Ordering::Relaxed) {
+            if hotkey_shutdown_token.is_cancelled() {
                 info!("Hotkey handler shutting down");
                 break;
             }
@@ -134,9 +135,18 @@ async fn main() -> Result<()> {
     });
 
     let app_state_hotkey = app_state.clone();
-    tokio::spawn(async move {
-        while let Some(()) = hotkey_rx.recv().await {
-            toggle_recording(app_state_hotkey.clone()).await;
+    let hotkey_rx_shutdown_token = shutdown_token.child_token();
+    let hotkey_rx_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(()) = hotkey_rx.recv() => {
+                    toggle_recording(app_state_hotkey.clone()).await;
+                }
+                _ = hotkey_rx_shutdown_token.cancelled() => {
+                    info!("Hotkey receiver shutting down");
+                    break;
+                }
+            }
         }
     });
 
@@ -147,13 +157,26 @@ async fn main() -> Result<()> {
     app_state.recording.store(false, Ordering::Relaxed);
 
     // Signal all components to shut down
-    shutdown.store(true, Ordering::Relaxed);
+    shutdown_token.cancel();
 
-    // Give components time to shut down gracefully
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Wait for tasks to complete with a timeout
+    let shutdown_timeout = tokio::time::timeout(tokio::time::Duration::from_secs(3), async {
+        // Wait for all tasks to complete
+        let _ = hotkey_handle.await;
+        let _ = hotkey_rx_handle.await;
+    })
+    .await;
 
-    // Force exit if components haven't shut down
-    std::process::exit(0);
+    match shutdown_timeout {
+        Ok(_) => {
+            info!("All tasks shut down gracefully");
+            Ok(())
+        }
+        Err(_) => {
+            warn!("Some tasks did not shut down within timeout, forcing exit");
+            std::process::exit(0);
+        }
+    }
 }
 
 pub async fn toggle_recording(app_state: AppState) {
@@ -183,7 +206,7 @@ async fn start_recording(app_state: AppState) -> Result<()> {
         if let Err(e) = audio::capture_audio(
             audio_tx,
             app_state_audio.recording.clone(),
-            app_state_audio.shutdown.clone(),
+            app_state_audio.shutdown_token.child_token(),
             app_state_audio.config.audio.clone(),
         ) {
             error!("Audio capture error: {}", e);
