@@ -34,6 +34,8 @@ You'll need a Deepgram API key for speech transcription:
 
 ## Installation
 
+### Traditional Installation
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/gnome-voice-input.git
@@ -53,6 +55,115 @@ just init-config
 4. Edit the config file and add your Deepgram API key:
 ```bash
 nano ~/.config/gnome-voice-input/config.toml
+```
+
+### Nix Installation
+
+#### Using Nix Flakes
+
+```bash
+# Run directly without installation
+nix run github:yourusername/gnome-voice-input
+
+# Install to user profile
+nix profile install github:yourusername/gnome-voice-input
+
+# Build locally
+nix build .#gnome-voice-input
+```
+
+#### Home Manager Setup (Recommended)
+
+For user-level management with Home Manager:
+
+```nix
+{ config, pkgs, ... }:
+
+{
+  # Add the overlay to get the package
+  nixpkgs.overlays = [
+    (final: prev: {
+      gnome-voice-input = (builtins.getFlake "github:yourusername/gnome-voice-input").packages.${pkgs.system}.default;
+    })
+  ];
+
+  # Install the package
+  home.packages = [ pkgs.gnome-voice-input ];
+
+  # Create a user systemd service
+  systemd.user.services.gnome-voice-input = {
+    Unit = {
+      Description = "GNOME Voice Input";
+      After = [ "graphical-session.target" ];
+      PartOf = [ "graphical-session.target" ];
+    };
+
+    Service = {
+      Type = "simple";
+      ExecStart = "${pkgs.gnome-voice-input}/bin/gnome-voice-input";
+      Restart = "on-failure";
+      RestartSec = 5;
+      
+      # Set environment for the API key (secure method)
+      # Create this file with: echo "your-actual-api-key" > ~/.config/gnome-voice-input/api-key
+      # chmod 600 ~/.config/gnome-voice-input/api-key
+      Environment = "DEEPGRAM_API_KEY_FILE=%h/.config/gnome-voice-input/api-key";
+    };
+
+    Install = {
+      WantedBy = [ "graphical-session.target" ];
+    };
+  };
+
+  # Create config file (without the API key)
+  xdg.configFile."gnome-voice-input/config.toml".text = ''
+    # API key is loaded from DEEPGRAM_API_KEY_FILE environment variable
+    hotkey = "Super+V"
+
+    [audio]
+    sample_rate = 16000
+    channels = 1
+    buffer_size = 512
+
+    [transcription]
+    model = "nova-3"
+    language = "en"
+    smart_format = true
+    punctuate = true
+
+    [ui]
+    show_tray_icon = true
+    notifications = true
+  '';
+}
+```
+
+#### Setting up the API Key Securely
+
+Store your Deepgram API key in a separate file:
+
+```bash
+# Create the config directory if it doesn't exist
+mkdir -p ~/.config/gnome-voice-input
+
+# Write your API key to a file (replace with your actual key)
+echo "your-actual-deepgram-api-key" > ~/.config/gnome-voice-input/api-key
+
+# Set proper permissions (readable only by you)
+chmod 600 ~/.config/gnome-voice-input/api-key
+```
+
+Alternatively, you can use Home Manager's `age` module or `sops-nix` for encrypted secrets management.
+
+### Development with Nix
+
+```bash
+# Enter development shell
+nix develop
+
+# Or run commands directly
+nix develop -c just check
+nix develop -c just test
 ```
 
 ## Usage
