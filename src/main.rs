@@ -100,22 +100,29 @@ async fn main() -> Result<()> {
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
     let shutdown_hotkey = shutdown.clone();
 
-    std::thread::spawn(move || loop {
-        if shutdown_hotkey.load(Ordering::Relaxed) {
-            info!("Hotkey handler shutting down");
-            break;
-        }
+    // Use tokio's spawn_blocking for the hotkey handler
+    tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Handle::current();
 
-        match GlobalHotKeyEvent::receiver().recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(event) => {
-                if event.state == HotKeyState::Pressed {
-                    info!("Hotkey pressed");
-                    if hotkey_tx.blocking_send(()).is_err() {
-                        break;
+        loop {
+            if shutdown_hotkey.load(Ordering::Relaxed) {
+                info!("Hotkey handler shutting down");
+                break;
+            }
+
+            match GlobalHotKeyEvent::receiver().recv_timeout(std::time::Duration::from_millis(100))
+            {
+                Ok(event) => {
+                    if event.state == HotKeyState::Pressed {
+                        info!("Hotkey pressed");
+                        let tx = hotkey_tx.clone();
+                        runtime.spawn(async move {
+                            let _ = tx.send(()).await;
+                        });
                     }
                 }
+                Err(_) => continue,
             }
-            Err(_) => continue,
         }
     });
 
@@ -164,8 +171,8 @@ async fn start_recording(app_state: AppState) -> Result<()> {
     let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
 
     let app_state_audio = app_state.clone();
-    std::thread::spawn(move || {
-        debug!("Audio capture thread started");
+    tokio::task::spawn_blocking(move || {
+        debug!("Audio capture task started");
         if let Err(e) = audio::capture_audio(
             audio_tx,
             app_state_audio.recording.clone(),
@@ -174,7 +181,7 @@ async fn start_recording(app_state: AppState) -> Result<()> {
         ) {
             error!("Audio capture error: {}", e);
         }
-        debug!("Audio capture thread ended");
+        debug!("Audio capture task ended");
     });
 
     debug!("Creating transcription stream");

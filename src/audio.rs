@@ -2,10 +2,6 @@ use crate::config::AudioConfig;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use eyre::{OptionExt, Result, WrapErr};
-use ringbuf::{
-    traits::{Consumer, Producer, Split},
-    HeapRb,
-};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -48,83 +44,73 @@ pub fn capture_audio(
 
     let err_fn = |err| error!("Audio stream error: {}", err);
 
-    // Use smaller buffer for lower latency streaming
-    let (mut producer, mut consumer) = HeapRb::<f32>::new(4096).split();
+    // Create channel for audio samples
+    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<f32>();
 
     let stream = match sample_format {
-        SampleFormat::F32 => build_input_stream::<f32, _>(&device, &config, producer, err_fn)?,
+        SampleFormat::F32 => {
+            build_input_stream::<f32>(&device, &config, sample_tx.clone(), err_fn)?
+        }
         SampleFormat::I16 => {
-            let (producer_i16, consumer_i16) = HeapRb::<i16>::new(8192).split();
-            let stream = build_input_stream::<i16, _>(&device, &config, producer_i16, err_fn)?;
+            let (tx_i16, rx_i16) = std::sync::mpsc::channel::<i16>();
+            let stream = build_input_stream::<i16>(&device, &config, tx_i16, err_fn)?;
 
+            let tx_f32 = sample_tx.clone();
             std::thread::spawn(move || {
-                let mut consumer_i16 = consumer_i16;
-                loop {
-                    while let Some(sample) = consumer_i16.try_pop() {
-                        let normalized = sample.to_float_sample();
-                        if producer.try_push(normalized).is_err() {
-                            break;
-                        }
+                while let Ok(sample) = rx_i16.recv() {
+                    let normalized = sample.to_float_sample();
+                    if tx_f32.send(normalized).is_err() {
+                        break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             });
 
             stream
         }
         SampleFormat::U16 => {
-            let (producer_u16, consumer_u16) = HeapRb::<u16>::new(8192).split();
-            let stream = build_input_stream::<u16, _>(&device, &config, producer_u16, err_fn)?;
+            let (tx_u16, rx_u16) = std::sync::mpsc::channel::<u16>();
+            let stream = build_input_stream::<u16>(&device, &config, tx_u16, err_fn)?;
 
+            let tx_f32 = sample_tx.clone();
             std::thread::spawn(move || {
-                let mut consumer_u16 = consumer_u16;
-                loop {
-                    while let Some(sample) = consumer_u16.try_pop() {
-                        let normalized = sample.to_float_sample();
-                        if producer.try_push(normalized).is_err() {
-                            break;
-                        }
+                while let Ok(sample) = rx_u16.recv() {
+                    let normalized = sample.to_float_sample();
+                    if tx_f32.send(normalized).is_err() {
+                        break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             });
 
             stream
         }
         SampleFormat::U8 => {
-            let (producer_u8, consumer_u8) = HeapRb::<u8>::new(8192).split();
-            let stream = build_input_stream::<u8, _>(&device, &config, producer_u8, err_fn)?;
+            let (tx_u8, rx_u8) = std::sync::mpsc::channel::<u8>();
+            let stream = build_input_stream::<u8>(&device, &config, tx_u8, err_fn)?;
 
+            let tx_f32 = sample_tx.clone();
             std::thread::spawn(move || {
-                let mut consumer_u8 = consumer_u8;
-                loop {
-                    while let Some(sample) = consumer_u8.try_pop() {
-                        // Convert U8 (0-255) to f32 (-1.0 to 1.0)
-                        let normalized = (sample as f32 / 128.0) - 1.0;
-                        if producer.try_push(normalized).is_err() {
-                            break;
-                        }
+                while let Ok(sample) = rx_u8.recv() {
+                    // Convert U8 (0-255) to f32 (-1.0 to 1.0)
+                    let normalized = (sample as f32 / 128.0) - 1.0;
+                    if tx_f32.send(normalized).is_err() {
+                        break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             });
 
             stream
         }
         SampleFormat::I32 => {
-            let (producer_i32, consumer_i32) = HeapRb::<i32>::new(8192).split();
-            let stream = build_input_stream::<i32, _>(&device, &config, producer_i32, err_fn)?;
+            let (tx_i32, rx_i32) = std::sync::mpsc::channel::<i32>();
+            let stream = build_input_stream::<i32>(&device, &config, tx_i32, err_fn)?;
 
+            let tx_f32 = sample_tx.clone();
             std::thread::spawn(move || {
-                let mut consumer_i32 = consumer_i32;
-                loop {
-                    while let Some(sample) = consumer_i32.try_pop() {
-                        let normalized = sample.to_float_sample();
-                        if producer.try_push(normalized).is_err() {
-                            break;
-                        }
+                while let Ok(sample) = rx_i32.recv() {
+                    let normalized = sample.to_float_sample();
+                    if tx_f32.send(normalized).is_err() {
+                        break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             });
 
@@ -155,56 +141,65 @@ pub fn capture_audio(
             break;
         }
 
-        // Collect samples from the ring buffer
-        let mut samples_collected = 0;
-        while let Some(sample) = consumer.try_pop() {
-            sample_buffer.push(sample);
-            samples_collected += 1;
+        // Use recv_timeout to avoid busy-waiting
+        match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
+            Ok(sample) => {
+                sample_buffer.push(sample);
 
-            // Send chunks based on configured size
-            if sample_buffer.len() >= samples_per_chunk {
-                chunks_sent += 1;
-
-                // Convert f32 samples to i16 (Linear16) format
-                let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
-                for &f32_sample in &sample_buffer {
-                    // Convert f32 (-1.0 to 1.0) to i16 (-32768 to 32767)
-                    let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                    i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
-                }
-
-                total_samples_sent += sample_buffer.len() as u64;
-                debug!(
-                    "Sending audio chunk #{}: {} samples ({} bytes), total sent: {} samples",
-                    chunks_sent,
-                    sample_buffer.len(),
-                    i16_buffer.len(),
-                    total_samples_sent
-                );
-
-                // Save first chunk for debugging
-                if chunks_sent == 1 {
-                    if let Err(e) = std::fs::write("debug_audio_chunk.raw", &i16_buffer) {
-                        error!("Failed to save debug audio chunk: {}", e);
-                    } else {
-                        info!("Saved first audio chunk to debug_audio_chunk.raw for analysis");
+                // Continue collecting samples up to chunk size
+                while sample_buffer.len() < samples_per_chunk {
+                    match sample_rx.try_recv() {
+                        Ok(s) => sample_buffer.push(s),
+                        Err(_) => break,
                     }
                 }
 
-                if audio_tx.blocking_send(i16_buffer).is_err() {
-                    info!("Audio receiver dropped, stopping capture");
-                    break;
+                // Send chunk if we have enough samples
+                if sample_buffer.len() >= samples_per_chunk {
+                    chunks_sent += 1;
+
+                    // Convert f32 samples to i16 (Linear16) format
+                    let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
+                    for &f32_sample in &sample_buffer {
+                        // Convert f32 (-1.0 to 1.0) to i16 (-32768 to 32767)
+                        let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                        i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
+                    }
+
+                    total_samples_sent += sample_buffer.len() as u64;
+                    debug!(
+                        "Sending audio chunk #{}: {} samples ({} bytes), total sent: {} samples",
+                        chunks_sent,
+                        sample_buffer.len(),
+                        i16_buffer.len(),
+                        total_samples_sent
+                    );
+
+                    // Save first chunk for debugging
+                    if chunks_sent == 1 {
+                        if let Err(e) = std::fs::write("debug_audio_chunk.raw", &i16_buffer) {
+                            error!("Failed to save debug audio chunk: {}", e);
+                        } else {
+                            info!("Saved first audio chunk to debug_audio_chunk.raw for analysis");
+                        }
+                    }
+
+                    if audio_tx.blocking_send(i16_buffer).is_err() {
+                        info!("Audio receiver dropped, stopping capture");
+                        break;
+                    }
+                    sample_buffer.clear();
                 }
-                sample_buffer.clear();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Normal timeout, continue loop
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                info!("Audio sample channel disconnected");
+                break;
             }
         }
-
-        if samples_collected > 0 {
-            debug!("Collected {} samples from ring buffer", samples_collected);
-        }
-
-        // Shorter sleep for more responsive streaming
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
     // Send any remaining samples
@@ -220,21 +215,20 @@ pub fn capture_audio(
     Ok(())
 }
 
-fn build_input_stream<T, P>(
+fn build_input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    mut producer: P,
+    sender: std::sync::mpsc::Sender<T>,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream>
 where
     T: Sample + Send + 'static + cpal::SizedSample,
-    P: Producer<Item = T> + Send + 'static,
 {
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             for &sample in data {
-                if producer.try_push(sample).is_err() {
+                if sender.send(sample).is_err() {
                     break;
                 }
             }

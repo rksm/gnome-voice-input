@@ -1,4 +1,5 @@
 use crate::AppState;
+use tokio::sync::mpsc;
 use tracing::info;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
@@ -39,41 +40,49 @@ impl VoiceInputTray {
             .with_icon(icon)
             .build()?;
 
-        // Handle menu events in a separate thread
+        // Create a channel for tray events
+        let (event_tx, mut event_rx) = mpsc::channel(10);
+
+        // Handle menu events in a separate blocking task
         let app_state_clone = app_state.clone();
         let toggle_id = toggle_item.id().clone();
         let about_id = about_item.id().clone();
         let quit_id = quit_item.id().clone();
 
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
+        tokio::task::spawn_blocking(move || loop {
+            if app_state_clone
+                .shutdown
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                info!("Tray event handler shutting down");
+                break;
+            }
 
-            loop {
-                if app_state_clone
-                    .shutdown
-                    .load(std::sync::atomic::Ordering::Relaxed)
+            if let Ok(event) =
+                MenuEvent::receiver().recv_timeout(std::time::Duration::from_millis(100))
+            {
+                if event_tx
+                    .blocking_send((event.id, app_state_clone.clone()))
+                    .is_err()
                 {
-                    info!("Tray event handler shutting down");
                     break;
                 }
+            }
+        });
 
-                if let Ok(event) =
-                    MenuEvent::receiver().recv_timeout(std::time::Duration::from_millis(100))
-                {
-                    if event.id == toggle_id {
-                        info!("Toggle recording from tray");
-                        let app_state = app_state_clone.clone();
-                        runtime.spawn(async move {
-                            crate::toggle_recording(app_state).await;
-                        });
-                    } else if event.id == about_id {
-                        info!("GNOME Voice Input v{}", env!("CARGO_PKG_VERSION"));
-                    } else if event.id == quit_id {
-                        info!("Quit requested from tray");
-                        app_state_clone
-                            .shutdown
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+        // Handle events in async task
+        tokio::spawn(async move {
+            while let Some((event_id, app_state_event)) = event_rx.recv().await {
+                if event_id == toggle_id {
+                    info!("Toggle recording from tray");
+                    crate::toggle_recording(app_state_event).await;
+                } else if event_id == about_id {
+                    info!("GNOME Voice Input v{}", env!("CARGO_PKG_VERSION"));
+                } else if event_id == quit_id {
+                    info!("Quit requested from tray");
+                    app_state_event
+                        .shutdown
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         });
