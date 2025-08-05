@@ -183,7 +183,7 @@ fn create_audio_stream(
 ) -> impl Stream<Item = Result<bytes::Bytes, std::io::Error>> {
     futures::stream::poll_fn(move |cx| match audio_rx.poll_recv(cx) {
         std::task::Poll::Ready(Some(data)) => {
-            debug!("Audio stream produced {} bytes", data.len());
+            trace!("Audio stream produced {} bytes", data.len());
             std::task::Poll::Ready(Some(Ok(bytes::Bytes::from(data))))
         }
         std::task::Poll::Ready(None) => {

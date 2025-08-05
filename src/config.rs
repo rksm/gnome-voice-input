@@ -72,7 +72,7 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Result<Self> {
         let config_path = Self::config_path()?;
-        debug!("Loading config from {}", config_path.display());
+        info!("Loading config from {}", config_path.display());
 
         if !config_path.exists() {
             let config = Self::default();

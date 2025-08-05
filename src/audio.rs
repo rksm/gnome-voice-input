@@ -167,7 +167,7 @@ pub fn capture_audio(
                     }
 
                     total_samples_sent += sample_buffer.len() as u64;
-                    debug!(
+                    trace!(
                         "Sending audio chunk #{}: {} samples ({} bytes), total sent: {} samples",
                         chunks_sent,
                         sample_buffer.len(),

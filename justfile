@@ -7,7 +7,7 @@ build:
 
 # Run the application
 run *args="":
-    RUST_LOG=info cargo run --release -- {{ args }}
+    RUST_LOG=debug cargo run --release -- {{ args }}
 
 debug *args="":
     RUST_LOG=debug cargo run -- --debug {{ args }}

@@ -11,12 +11,12 @@ Background utility for the Linux desktop that transcribes speech using Deepgram 
 The project uses a `justfile` for task management:
 
 - `just build` - Build the project
-- `just run` - Run with debug logging (RUST_LOG=debug)
-- `just test` - Run tests with single thread
+- `just run` - Run with release build and debug logging
+- `just debug` - Run debug build with debug logging
+- `just test` - Run tests with single thread (required for audio device access)
 - `just fmt` - Format code with cargo fmt
 - `just lint` - Run clippy with strict warnings
 - `just check` - Run format, lint, and test in sequence
-- `just release` - Build optimized release version
 - `just install` - Install the application system-wide
 - `just init-config` - Create default config file
 - `just clean` - Clean build artifacts
@@ -25,7 +25,7 @@ The project uses a `justfile` for task management:
 
 ### Development Environment
 
-Use `nix develop` to enter the development shell with all dependencies. Or run with `nix develop -c <command>`. E.g. `nix develop -c just check`
+Use nix dev shell with `nix develop`, run shell commands with `nix develop -c <command>`. E.g. `nix develop -c just check`.
 
 ## Architecture
 
@@ -51,11 +51,11 @@ Use `nix develop` to enter the development shell with all dependencies. Or run w
 
 ### Data Flow
 
-1. Global hotkey triggers recording toggle (src/main.rs:58-65)
-2. Audio capture starts in separate thread (src/audio.rs:12)
-3. Audio data flows through ring buffer to transcription service
-4. Transcriber processes 500ms chunks via Deepgram API (src/transcription.rs:28-31)
-5. Transcribed text is automatically typed via enigo (src/keyboard.rs:5)
+1. Global hotkey triggers recording toggle
+2. Audio capture starts in separate thread, samples are sent via channels
+3. Audio data is streamed to Deepgram WebSocket for real-time transcription
+4. Transcriber returns both interim and final transcription results
+5. Transcribed text is automatically typed via enigo keyboard simulation
 
 ### Configuration
 
@@ -75,5 +75,6 @@ Use `nix develop` to enter the development shell with all dependencies. Or run w
 
 - Tests run with `--test-threads=1` due to audio device conflicts
 - Audio processing happens in dedicated thread to avoid blocking async runtime
-- Transcription uses Nova3 model with punctuation enabled
-- System tray requires KDE StatusNotifierItem support
+- Transcription uses Deepgram Nova3 model with WebSocket streaming for real-time results
+- System tray requires KDE StatusNotifierItem support (install AppIndicator extension on GNOME)
+- Debug mode (`--debug` flag) saves WAV files of audio chunks sent to Deepgram
