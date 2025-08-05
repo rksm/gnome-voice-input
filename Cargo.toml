@@ -55,5 +55,8 @@ byteorder = "1.5"
 # Time/date handling
 chrono = "0.4"
 
+# File watching
+notify = "6.1"
+
 [dev-dependencies]
 tempfile = "3.12"

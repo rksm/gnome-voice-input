@@ -176,15 +176,6 @@ pub fn capture_audio(
                         total_samples_sent
                     );
 
-                    // Save first chunk for debugging
-                    if chunks_sent == 1 {
-                        if let Err(e) = std::fs::write("debug_audio_chunk.raw", &i16_buffer) {
-                            error!("Failed to save debug audio chunk: {}", e);
-                        } else {
-                            info!("Saved first audio chunk to debug_audio_chunk.raw for analysis");
-                        }
-                    }
-
                     if audio_tx.blocking_send(i16_buffer).is_err() {
                         info!("Audio receiver dropped, stopping capture");
                         break;

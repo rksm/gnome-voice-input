@@ -14,12 +14,15 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod audio;
 mod config;
+mod config_watcher;
 mod hotkey;
 mod keyboard;
 mod transcription;
 mod tray;
 
 use config::Config;
+use config_watcher::ConfigWatcher;
+use std::sync::RwLock;
 use transcription::TranscriptionResult;
 
 #[derive(Parser, Debug)]
@@ -37,13 +40,12 @@ struct Args {
 
 #[derive(Clone)]
 pub struct AppState {
-    #[allow(dead_code)]
-    config: Config,
+    config: Arc<RwLock<Config>>,
     recording: Arc<AtomicBool>,
-    transcriber: Arc<transcription::Transcriber>,
+    transcriber: Arc<RwLock<Arc<transcription::Transcriber>>>,
     shutdown_token: CancellationToken,
-    #[allow(dead_code)]
     debug: bool,
+    custom_config_path: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -70,6 +72,8 @@ async fn main() -> Result<()> {
     }
 
     let config = Config::load(args.config.clone())?;
+    let config_path = Config::get_config_path(args.config.clone())?;
+
     let transcriber = Arc::new(transcription::Transcriber::new(
         config.deepgram_api_key.clone(),
         config.transcription.clone(),
@@ -79,11 +83,12 @@ async fn main() -> Result<()> {
     let shutdown_token = CancellationToken::new();
 
     let app_state = AppState {
-        config: config.clone(),
+        config: Arc::new(RwLock::new(config.clone())),
         recording: Arc::new(AtomicBool::new(false)),
-        transcriber,
+        transcriber: Arc::new(RwLock::new(transcriber)),
         shutdown_token: shutdown_token.clone(),
         debug: args.debug,
+        custom_config_path: args.config.clone(),
     };
 
     let (hotkey_manager, registered_hotkey) = hotkey::setup_hotkeys(&config)?;
@@ -128,6 +133,75 @@ async fn main() -> Result<()> {
         info!("System tray icon disabled in configuration");
         None
     };
+
+    // Set up config file watcher
+    let (config_reload_tx, mut config_reload_rx) = tokio::sync::mpsc::channel(10);
+    let _config_watcher = ConfigWatcher::new(
+        config_path.clone(),
+        config_reload_tx,
+        shutdown_token.child_token(),
+    )?;
+
+    // Spawn config reload handler
+    let app_state_reload = app_state.clone();
+    let hotkey_manager_arc = Arc::new(tokio::sync::Mutex::new(hotkey_manager));
+    let registered_hotkey_arc = Arc::new(tokio::sync::Mutex::new(registered_hotkey));
+
+    let hotkey_manager_arc_clone = hotkey_manager_arc.clone();
+    let registered_hotkey_arc_clone = registered_hotkey_arc.clone();
+
+    let config_reload_handle = tokio::spawn(async move {
+        while let Some(()) = config_reload_rx.recv().await {
+            info!("Reloading configuration...");
+
+            // Load new config
+            match Config::load(app_state_reload.custom_config_path.clone()) {
+                Ok(new_config) => {
+                    // Update config
+                    {
+                        let mut config = app_state_reload.config.write().unwrap();
+                        *config = new_config.clone();
+                    }
+
+                    // Recreate transcriber with new config
+                    let new_transcriber = Arc::new(transcription::Transcriber::new(
+                        new_config.deepgram_api_key.clone(),
+                        new_config.transcription.clone(),
+                        app_state_reload.debug,
+                    ));
+                    {
+                        let mut transcriber = app_state_reload.transcriber.write().unwrap();
+                        *transcriber = new_transcriber;
+                    }
+
+                    // Re-register hotkey if changed
+                    match hotkey::setup_hotkeys(&new_config) {
+                        Ok((new_manager, new_hotkey)) => {
+                            let mut manager = hotkey_manager_arc_clone.lock().await;
+                            let mut hotkey = registered_hotkey_arc_clone.lock().await;
+
+                            // Unregister old hotkey
+                            if let Err(e) = manager.unregister(*hotkey) {
+                                warn!("Failed to unregister old hotkey: {}", e);
+                            }
+
+                            // Update with new hotkey
+                            *manager = new_manager;
+                            *hotkey = new_hotkey;
+
+                            info!("Configuration reloaded successfully");
+                        }
+                        Err(e) => {
+                            error!("Failed to setup new hotkeys: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to reload config: {}", e);
+                }
+            }
+        }
+    });
 
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
     let hotkey_shutdown_token = shutdown_token.child_token();
@@ -188,6 +262,7 @@ async fn main() -> Result<()> {
         // Wait for all async tasks to complete
         let _ = hotkey_handle.await;
         let _ = hotkey_rx_handle.await;
+        let _ = config_reload_handle.await;
 
         // Wait for tray thread if it exists
         if let Some(handle) = tray_handle {
@@ -210,7 +285,9 @@ async fn main() -> Result<()> {
     }
 
     // Unregister hotkeys before exiting
-    if let Err(e) = hotkey_manager.unregister(registered_hotkey) {
+    let manager = hotkey_manager_arc.lock().await;
+    let hotkey = registered_hotkey_arc.lock().await;
+    if let Err(e) = manager.unregister(*hotkey) {
         warn!("Failed to unregister hotkey: {}", e);
     } else {
         info!("Hotkey unregistered successfully");
@@ -240,6 +317,7 @@ async fn start_recording(app_state: AppState) -> Result<()> {
     debug!("Starting recording process");
     let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
 
+    let audio_config = app_state.config.read().unwrap().audio.clone();
     let app_state_audio = app_state.clone();
     tokio::task::spawn_blocking(move || {
         debug!("Audio capture task started");
@@ -247,7 +325,7 @@ async fn start_recording(app_state: AppState) -> Result<()> {
             audio_tx,
             app_state_audio.recording.clone(),
             app_state_audio.shutdown_token.child_token(),
-            app_state_audio.config.audio.clone(),
+            audio_config,
         ) {
             error!("Audio capture error: {}", e);
         }
@@ -255,10 +333,16 @@ async fn start_recording(app_state: AppState) -> Result<()> {
     });
 
     debug!("Creating transcription stream");
-    let mut transcription_rx = app_state.transcriber.transcribe_stream(audio_rx).await?;
+    let transcriber = app_state.transcriber.read().unwrap().clone();
+    let mut transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
     debug!("Transcription stream created, waiting for transcriptions");
 
-    let use_interim_results = app_state.config.transcription.use_interim_results;
+    let use_interim_results = app_state
+        .config
+        .read()
+        .unwrap()
+        .transcription
+        .use_interim_results;
     let mut last_interim_length = 0;
 
     while let Some(result) = transcription_rx.recv().await {

@@ -119,6 +119,21 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn get_config_path(custom_path: Option<PathBuf>) -> Result<PathBuf> {
+        match custom_path {
+            Some(path) => {
+                if !path.exists() {
+                    bail!(
+                        "Config file not found at specified path: {}",
+                        path.display()
+                    );
+                }
+                Ok(path)
+            }
+            None => Self::config_path(),
+        }
+    }
+
     pub fn load(custom_path: Option<PathBuf>) -> Result<Self> {
         let config_path = match custom_path {
             Some(path) => {
