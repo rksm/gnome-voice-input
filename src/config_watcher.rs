@@ -75,9 +75,16 @@ pub fn setup_config_reload_handler(
     let config_watcher =
         ConfigWatcher::new(config_path, config_reload_tx, shutdown_token.child_token())?;
 
+    let shutdown_token_clone = shutdown_token.child_token();
     let handle = tokio::spawn(async move {
-        while let Some(()) = config_reload_rx.recv().await {
-            info!("Reloading configuration...");
+        loop {
+            tokio::select! {
+                _ = shutdown_token_clone.cancelled() => {
+                    info!("Config reload handler shutting down");
+                    break;
+                }
+                Some(()) = config_reload_rx.recv() => {
+                    info!("Reloading configuration...");
 
             match Config::load(app_state.custom_config_path.clone()) {
                 Ok(new_config) => {
@@ -117,6 +124,8 @@ pub fn setup_config_reload_handler(
                 }
                 Err(e) => {
                     error!("Failed to reload config: {}", e);
+                }
+            }
                 }
             }
         }

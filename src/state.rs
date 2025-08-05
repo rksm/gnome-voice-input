@@ -60,17 +60,21 @@ impl ShutdownHandles {
         app_state.recording.store(false, Ordering::Relaxed);
         shutdown_token.cancel();
 
-        let shutdown_timeout = tokio::time::timeout(tokio::time::Duration::from_secs(3), async {
+        let shutdown_timeout = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+            // Wait for async tasks first
             let _ = self.hotkey_handle.await;
             let _ = self.hotkey_rx_handle.await;
             let _ = self.config_reload_handle.await;
 
+            // Wait for the tray thread
             if let Some(handle) = self.tray_handle {
-                tokio::task::spawn_blocking(move || {
-                    let _ = handle.join();
-                })
-                .await
-                .ok();
+                let tray_result = tokio::task::spawn_blocking(move || handle.join()).await;
+
+                match tray_result {
+                    Ok(Ok(())) => info!("Tray thread joined successfully"),
+                    Ok(Err(_)) => warn!("Tray thread panicked during shutdown"),
+                    Err(e) => warn!("Failed to join tray thread: {}", e),
+                }
             }
         })
         .await;

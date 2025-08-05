@@ -240,23 +240,60 @@ pub fn setup_tray(
     match create_tray(app_state, config.clone()) {
         Ok(Some(tray)) => {
             info!("System tray service started successfully");
+
+            // Create a channel for shutdown signaling
+            let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
             let tray_shutdown_token = shutdown_token.child_token();
+
+            // Spawn a task to monitor the cancellation token and send shutdown signal
+            tokio::spawn(async move {
+                tray_shutdown_token.cancelled().await;
+                info!("Tray shutdown requested, sending signal");
+                let _ = shutdown_tx.send(());
+            });
+
             Some(std::thread::spawn(move || {
                 info!("Starting tray service thread");
 
                 let handle = tray.handle();
-                std::thread::spawn(move || {
-                    while !tray_shutdown_token.is_cancelled() {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                let shutdown_handle = handle.clone();
+
+                // Spawn the shutdown monitor thread and keep its handle
+                let monitor_thread = std::thread::spawn(move || {
+                    // Block on receiving shutdown signal instead of polling
+                    match shutdown_rx.recv() {
+                        Ok(()) => {
+                            info!("Received shutdown signal, stopping tray service");
+                            shutdown_handle.shutdown();
+                        }
+                        Err(_) => {
+                            // Channel disconnected, shutdown anyway
+                            warn!("Shutdown channel disconnected, stopping tray service");
+                            shutdown_handle.shutdown();
+                        }
                     }
-                    info!("Tray shutdown requested, stopping service");
-                    handle.shutdown();
+                    info!("Shutdown monitor thread exiting");
                 });
 
+                // Run the tray service - this blocks until shutdown() is called
                 match tray.run() {
-                    Ok(()) => info!("Tray service thread completed gracefully"),
-                    Err(e) => error!("Tray service error: {}", e),
+                    Ok(()) => {
+                        info!("Tray service completed gracefully");
+                        // Ensure the handle is dropped to allow shutdown
+                        drop(handle);
+                    }
+                    Err(e) => {
+                        error!("Tray service error: {}", e);
+                        drop(handle);
+                    }
                 }
+
+                // Wait for the monitor thread to finish
+                if let Err(e) = monitor_thread.join() {
+                    warn!("Monitor thread panicked: {:?}", e);
+                }
+
+                info!("Tray service thread exiting");
             }))
         }
         Ok(None) => {
