@@ -128,7 +128,8 @@ impl Config {
                         path.display()
                     );
                 }
-                Ok(path)
+                // Convert to absolute path for consistent handling
+                Ok(path.canonicalize()?)
             }
             None => Self::config_path(),
         }
@@ -144,7 +145,8 @@ impl Config {
                         path.display()
                     );
                 }
-                path
+                // Convert to absolute path for consistent handling
+                path.canonicalize()?
             }
             None => {
                 // Use the default config path

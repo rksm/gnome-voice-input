@@ -7,9 +7,8 @@ use global_hotkey::{
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-pub fn setup_hotkeys(config: &Config) -> Result<(GlobalHotKeyManager, HotKey)> {
-    let manager = GlobalHotKeyManager::new().wrap_err("Failed to create hotkey manager")?;
-
+/// Parse hotkey configuration into a HotKey without registering it
+pub fn parse_hotkey(config: &Config) -> Result<HotKey> {
     let mut modifiers = Modifiers::empty();
 
     for modifier in &config.hotkey.modifiers {
@@ -66,6 +65,12 @@ pub fn setup_hotkeys(config: &Config) -> Result<(GlobalHotKeyManager, HotKey)> {
     };
 
     let hotkey = HotKey::new(Some(modifiers), code);
+    Ok(hotkey)
+}
+
+pub fn setup_hotkeys(config: &Config) -> Result<(GlobalHotKeyManager, HotKey)> {
+    let manager = GlobalHotKeyManager::new().wrap_err("Failed to create hotkey manager")?;
+    let hotkey = parse_hotkey(config)?;
 
     manager
         .register(hotkey)

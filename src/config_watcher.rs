@@ -4,7 +4,9 @@ use global_hotkey::{hotkey::HotKey, GlobalHotKeyManager};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -77,6 +79,9 @@ pub fn setup_config_reload_handler(
 
     let shutdown_token_clone = shutdown_token.child_token();
     let handle = tokio::spawn(async move {
+        let mut last_reload = Instant::now();
+        const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+
         loop {
             tokio::select! {
                 _ = shutdown_token_clone.cancelled() => {
@@ -84,48 +89,80 @@ pub fn setup_config_reload_handler(
                     break;
                 }
                 Some(()) = config_reload_rx.recv() => {
+                    // Debounce: ignore events that come too quickly after the last reload
+                    let now = Instant::now();
+                    if now.duration_since(last_reload) < DEBOUNCE_DURATION {
+                        // Drain any additional events that might be queued
+                        while let Ok(Some(())) = timeout(Duration::from_millis(50), config_reload_rx.recv()).await {
+                            // Just consume the events
+                        }
+                        continue;
+                    }
+
                     info!("Reloading configuration...");
+                    last_reload = now;
 
-            match Config::load(app_state.custom_config_path.clone()) {
-                Ok(new_config) => {
-                    {
-                        let mut config = app_state.config.write().unwrap();
-                        *config = new_config.clone();
-                    }
-
-                    let new_transcriber = Arc::new(transcription::Transcriber::new(
-                        new_config.deepgram_api_key.clone(),
-                        new_config.transcription.clone(),
-                        app_state.debug,
-                    ));
-                    {
-                        let mut transcriber = app_state.transcriber.write().unwrap();
-                        *transcriber = new_transcriber;
-                    }
-
-                    match hotkey::setup_hotkeys(&new_config) {
-                        Ok((new_manager, new_hotkey)) => {
-                            let mut manager = hotkey_manager_arc.lock().await;
-                            let mut hotkey = registered_hotkey_arc.lock().await;
-
-                            if let Err(e) = manager.unregister(*hotkey) {
-                                warn!("Failed to unregister old hotkey: {}", e);
+                    match Config::load(app_state.custom_config_path.clone()) {
+                        Ok(new_config) => {
+                            // Update config
+                            {
+                                let mut config = app_state.config.write().unwrap();
+                                *config = new_config.clone();
                             }
 
-                            *manager = new_manager;
-                            *hotkey = new_hotkey;
+                            // Update transcriber
+                            let new_transcriber = Arc::new(transcription::Transcriber::new(
+                                new_config.deepgram_api_key.clone(),
+                                new_config.transcription.clone(),
+                                app_state.debug,
+                            ));
+                            {
+                                let mut transcriber = app_state.transcriber.write().unwrap();
+                                *transcriber = new_transcriber;
+                            }
 
-                            info!("Configuration reloaded successfully");
+                            // Update hotkey - reuse existing manager
+                            match hotkey::parse_hotkey(&new_config) {
+                                Ok(new_hotkey) => {
+                                    let manager = hotkey_manager_arc.lock().await;
+                                    let mut old_hotkey = registered_hotkey_arc.lock().await;
+
+                                    // Only update if the hotkey actually changed
+                                    if *old_hotkey != new_hotkey {
+                                        // Unregister old hotkey
+                                        if let Err(e) = manager.unregister(*old_hotkey) {
+                                            warn!("Failed to unregister old hotkey: {}", e);
+                                        }
+
+                                        // Register new hotkey with the same manager
+                                        match manager.register(new_hotkey) {
+                                            Ok(()) => {
+                                                *old_hotkey = new_hotkey;
+                                                info!("Hotkey updated successfully");
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to register new hotkey: {}", e);
+                                                // Try to re-register the old hotkey
+                                                if let Err(e) = manager.register(*old_hotkey) {
+                                                    error!("Failed to restore old hotkey: {}", e);
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        info!("Hotkey unchanged, skipping update");
+                                    }
+
+                                    info!("Configuration reloaded successfully");
+                                }
+                                Err(e) => {
+                                    error!("Failed to parse new hotkey: {}", e);
+                                }
+                            }
                         }
                         Err(e) => {
-                            error!("Failed to setup new hotkeys: {}", e);
+                            error!("Failed to reload config: {}", e);
                         }
                     }
-                }
-                Err(e) => {
-                    error!("Failed to reload config: {}", e);
-                }
-            }
                 }
             }
         }
