@@ -28,6 +28,11 @@
             gtk3.dev
             libappindicator-gtk3
             librsvg
+            glib
+            gdk-pixbuf
+            cairo
+            pango
+            atk
           ];
 
 
@@ -39,6 +44,15 @@
           RUST_BACKTRACE = "1";
           RUST_LOG = "debug";
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LD_LIBRARY_PATH = with pkgs; pkgs.lib.makeLibraryPath [
+            libappindicator-gtk3
+            gtk3
+            glib
+            gdk-pixbuf
+            cairo
+            pango
+            atk
+          ];
         };
       }
     );

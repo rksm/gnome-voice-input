@@ -81,7 +81,20 @@ async fn main() -> Result<()> {
 
     let _hotkey_manager = hotkey::setup_hotkeys(&config)?;
 
-    let _tray = tray::create_tray(app_state.clone())?;
+    // Try to create tray, but don't fail if it doesn't work
+    match tray::create_tray(app_state.clone()) {
+        Ok(tray) => {
+            info!("System tray created successfully");
+            // Keep tray alive
+            Box::leak(Box::new(tray));
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create system tray: {}. The app will continue without a tray icon.",
+                e
+            );
+        }
+    }
 
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
     let shutdown_hotkey = shutdown.clone();

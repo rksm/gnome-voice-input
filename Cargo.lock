@@ -1170,6 +1170,7 @@ dependencies = [
  "eyre",
  "futures",
  "global-hotkey",
+ "gtk",
  "hound",
  "reqwest",
  "ringbuf",

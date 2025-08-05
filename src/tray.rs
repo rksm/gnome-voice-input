@@ -11,6 +11,11 @@ pub struct VoiceInputTray {
 
 impl VoiceInputTray {
     pub fn new(app_state: AppState) -> eyre::Result<Self> {
+        // Initialize GTK if not already initialized
+        if !gtk::is_initialized() {
+            gtk::init().map_err(|e| eyre!("Failed to initialize GTK: {}", e))?;
+        }
+
         // Create menu
         let menu = Menu::new();
 

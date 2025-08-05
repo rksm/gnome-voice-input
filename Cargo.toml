@@ -25,6 +25,7 @@ enigo = "0.5"
 
 # System tray
 tray-icon = "0.19"
+gtk = "0.18"
 
 # Global hotkeys
 global-hotkey = "0.6"
