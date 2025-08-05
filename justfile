@@ -6,11 +6,11 @@ build:
     cargo build
 
 # Run the application
-run:
-    RUST_LOG=info cargo run --release
+run *args="":
+    RUST_LOG=info cargo run --release -- {{ args }}
 
-debug:
-    RUST_LOG=debug cargo run -- --debug
+debug *args="":
+    RUST_LOG=debug cargo run -- --debug {{ args }}
 
 # Run tests
 test:

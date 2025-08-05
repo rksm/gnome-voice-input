@@ -135,8 +135,12 @@ pub fn capture_audio(
 
     stream.play()?;
 
+    // Calculate samples per chunk based on config
+    let samples_per_chunk =
+        (audio_config.sample_rate * audio_config.audio_chunk_ms / 1000) as usize;
+
     // Buffer for collecting samples before conversion
-    let mut sample_buffer = Vec::with_capacity(800);
+    let mut sample_buffer = Vec::with_capacity(samples_per_chunk);
     let mut total_samples_sent = 0u64;
     let mut chunks_sent = 0u64;
 
@@ -157,8 +161,8 @@ pub fn capture_audio(
             sample_buffer.push(sample);
             samples_collected += 1;
 
-            // Send larger chunks for better transcription (800 samples = 50ms at 16kHz)
-            if sample_buffer.len() >= 800 {
+            // Send chunks based on configured size
+            if sample_buffer.len() >= samples_per_chunk {
                 chunks_sent += 1;
 
                 // Convert f32 samples to i16 (Linear16) format

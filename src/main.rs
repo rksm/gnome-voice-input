@@ -19,6 +19,7 @@ mod transcription;
 mod tray;
 
 use config::Config;
+use transcription::TranscriptionResult;
 
 #[derive(Parser, Debug)]
 #[command(name = "gnome-voice-input")]
@@ -180,11 +181,44 @@ async fn start_recording(app_state: AppState) -> Result<()> {
     let mut transcription_rx = app_state.transcriber.transcribe_stream(audio_rx).await?;
     debug!("Transcription stream created, waiting for transcriptions");
 
-    while let Some(text) = transcription_rx.recv().await {
-        debug!("Received transcription: '{}'", text);
-        if !text.trim().is_empty() {
-            info!("Transcribed: {}", text);
-            keyboard::type_text(&text)?;
+    let use_interim_results = app_state.config.transcription.use_interim_results;
+    let mut last_interim_length = 0;
+
+    while let Some(result) = transcription_rx.recv().await {
+        match result {
+            TranscriptionResult::Interim(text) => {
+                debug!("Received interim transcription: '{}'", text);
+                if use_interim_results && !text.trim().is_empty() {
+                    // Delete previous interim text by sending backspaces
+                    if last_interim_length > 0 {
+                        for _ in 0..last_interim_length {
+                            keyboard::press_key(enigo::Key::Backspace)?;
+                        }
+                    }
+
+                    // Type new interim text
+                    keyboard::type_text(&text)?;
+                    last_interim_length = text.chars().count();
+                }
+            }
+            TranscriptionResult::Final(text) => {
+                debug!("Received final transcription: '{}'", text);
+                if !text.trim().is_empty() {
+                    // Delete previous interim text if any
+                    if use_interim_results && last_interim_length > 0 {
+                        for _ in 0..last_interim_length {
+                            keyboard::press_key(enigo::Key::Backspace)?;
+                        }
+                        last_interim_length = 0;
+                    }
+
+                    info!("Final transcribed: {}", text);
+                    keyboard::type_text(&text)?;
+
+                    // Add a space after final transcription for better flow
+                    keyboard::type_text(" ")?;
+                }
+            }
         }
 
         if !app_state.recording.load(Ordering::Relaxed) {

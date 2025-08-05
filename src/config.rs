@@ -9,6 +9,8 @@ pub struct Config {
     pub deepgram_api_key: String,
     pub hotkey: HotkeyConfig,
     pub audio: AudioConfig,
+    #[serde(default)]
+    pub transcription: TranscriptionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +24,30 @@ pub struct AudioConfig {
     pub sample_rate: u32,
     pub channels: u16,
     pub buffer_size: usize,
+    #[serde(default = "default_audio_chunk_ms")]
+    pub audio_chunk_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionConfig {
+    #[serde(default = "default_use_interim_results")]
+    pub use_interim_results: bool,
+}
+
+fn default_audio_chunk_ms() -> u32 {
+    25 // 25ms chunks
+}
+
+fn default_use_interim_results() -> bool {
+    true
+}
+
+impl Default for TranscriptionConfig {
+    fn default() -> Self {
+        Self {
+            use_interim_results: true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -36,7 +62,9 @@ impl Default for Config {
                 sample_rate: 16000,
                 channels: 1,
                 buffer_size: 1024,
+                audio_chunk_ms: 25,
             },
+            transcription: TranscriptionConfig::default(),
         }
     }
 }

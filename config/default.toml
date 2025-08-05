@@ -17,3 +17,11 @@ sample_rate = 16000
 channels = 1
 # Audio buffer size
 buffer_size = 1024
+# Audio chunk size in milliseconds (lower = faster response, but may affect quality)
+audio_chunk_ms = 25
+
+[transcription]
+# Enable interim results for real-time transcription display
+# When true, shows text as you speak (may include corrections)
+# When false, only shows final, corrected text
+use_interim_results = true

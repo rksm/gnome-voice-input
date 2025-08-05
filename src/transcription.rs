@@ -6,6 +6,12 @@ use eyre::Result;
 use futures::stream::{Stream, StreamExt};
 use tokio::sync::mpsc;
 
+#[derive(Debug, Clone)]
+pub enum TranscriptionResult {
+    Interim(String),
+    Final(String),
+}
+
 pub struct Transcriber {
     client: Deepgram,
     _debug: bool,
@@ -23,7 +29,7 @@ impl Transcriber {
     pub async fn transcribe_stream(
         self: std::sync::Arc<Self>,
         audio_rx: mpsc::Receiver<Vec<u8>>,
-    ) -> Result<mpsc::Receiver<String>> {
+    ) -> Result<mpsc::Receiver<TranscriptionResult>> {
         debug!("Creating transcription stream");
         let (text_tx, text_rx) = mpsc::channel(10);
 
@@ -52,7 +58,7 @@ impl Transcriber {
         &self,
         options: Options,
         audio_rx: mpsc::Receiver<Vec<u8>>,
-        text_tx: mpsc::Sender<String>,
+        text_tx: mpsc::Sender<TranscriptionResult>,
     ) -> Result<()> {
         info!("Starting WebSocket connection to Deepgram");
 
@@ -100,7 +106,7 @@ impl Transcriber {
 
     async fn handle_stream_response(
         response: deepgram::common::stream_response::StreamResponse,
-        text_tx: &mpsc::Sender<String>,
+        text_tx: &mpsc::Sender<TranscriptionResult>,
     ) -> Result<()> {
         use deepgram::common::stream_response::StreamResponse;
 
@@ -122,23 +128,23 @@ impl Transcriber {
                         transcript, alternative.confidence, is_final
                     );
 
-                    // For debugging, log interim results too
-                    if !is_final && !transcript.is_empty() {
-                        debug!("Interim transcript: {}", transcript);
-                    }
+                    if !transcript.is_empty() {
+                        let result = if is_final {
+                            info!(
+                                "Final transcript: {} (confidence: {:.2})",
+                                transcript, alternative.confidence
+                            );
+                            TranscriptionResult::Final(transcript.to_string())
+                        } else {
+                            debug!("Interim transcript: {}", transcript);
+                            TranscriptionResult::Interim(transcript.to_string())
+                        };
 
-                    // Only send final transcripts to the user
-                    if is_final && !transcript.is_empty() {
-                        info!(
-                            "Final transcript: {} (confidence: {:.2})",
-                            transcript, alternative.confidence
-                        );
-
-                        if text_tx.send(transcript.to_string()).await.is_err() {
+                        if text_tx.send(result).await.is_err() {
                             error!("Failed to send transcript - receiver dropped");
                             return Err(eyre!("Text receiver dropped"));
                         }
-                    } else if transcript.is_empty() {
+                    } else {
                         debug!("Transcript was empty, ignoring");
                     }
                 } else {
