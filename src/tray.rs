@@ -1,91 +1,85 @@
 use crate::AppState;
-use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
-use tokio::runtime::Handle;
+use tracing::info;
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    Icon, TrayIcon, TrayIconBuilder,
+};
 
 pub struct VoiceInputTray {
-    app_state: AppState,
-    handle: Handle,
+    _tray_icon: TrayIcon,
 }
 
-impl Tray for VoiceInputTray {
-    fn title(&self) -> String {
-        "Voice Input".to_string()
-    }
+impl VoiceInputTray {
+    pub fn new(app_state: AppState) -> eyre::Result<Self> {
+        // Create menu
+        let menu = Menu::new();
 
-    fn icon_name(&self) -> String {
-        "audio-input-microphone".to_string()
-    }
+        let toggle_item = MenuItem::new("Toggle Recording", true, None);
+        let about_item = MenuItem::new("About", true, None);
+        let quit_item = MenuItem::new("Quit", true, None);
 
-    fn menu(&self) -> Vec<MenuItem<Self>> {
-        vec![
-            StandardItem {
-                label: "Toggle Recording".to_string(),
-                icon_name: "media-record".to_string(),
-                activate: Box::new(|tray: &mut Self| {
-                    let app_state = tray.app_state.clone();
-                    tray.handle.spawn(async move {
-                        crate::toggle_recording(app_state).await;
-                    });
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: "About".to_string(),
-                icon_name: "help-about".to_string(),
-                activate: Box::new(|_| {
-                    info!("GNOME Voice Input v{}", env!("CARGO_PKG_VERSION"));
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: "Quit".to_string(),
-                icon_name: "application-exit".to_string(),
-                activate: Box::new(|tray: &mut Self| {
-                    info!("Quit requested from tray");
-                    tray.app_state
-                        .shutdown
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }),
-                ..Default::default()
-            }
-            .into(),
-        ]
-    }
+        menu.append(&toggle_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&about_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&quit_item)?;
 
-    fn id(&self) -> String {
-        "gnome-voice-input".to_string()
-    }
-}
+        // Use a simple icon - we'll use a default microphone icon
+        // In a real app, you'd load an icon from resources
+        let icon = Icon::from_rgba(vec![255; 32 * 32 * 4], 32, 32)?;
 
-pub fn create_tray(app_state: AppState) {
-    let handle = Handle::current();
+        let tray_icon = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_tooltip("GNOME Voice Input")
+            .with_icon(icon)
+            .build()?;
 
-    let tray = VoiceInputTray {
-        app_state: app_state.clone(),
-        handle,
-    };
+        // Handle menu events in a separate thread
+        let app_state_clone = app_state.clone();
+        let toggle_id = toggle_item.id().clone();
+        let about_id = about_item.id().clone();
+        let quit_id = quit_item.id().clone();
 
-    let service = TrayService::new(tray);
-    let shutdown = app_state.shutdown.clone();
-
-    std::thread::spawn(move || {
-        let handle = service.handle();
-
-        // Check for shutdown in a separate thread
-        let shutdown_clone = shutdown.clone();
-        let handle_clone = handle.clone();
         std::thread::spawn(move || {
-            while !shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+
+            loop {
+                if app_state_clone
+                    .shutdown
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    info!("Tray event handler shutting down");
+                    break;
+                }
+
+                if let Ok(event) =
+                    MenuEvent::receiver().recv_timeout(std::time::Duration::from_millis(100))
+                {
+                    if event.id == toggle_id {
+                        info!("Toggle recording from tray");
+                        let app_state = app_state_clone.clone();
+                        runtime.spawn(async move {
+                            crate::toggle_recording(app_state).await;
+                        });
+                    } else if event.id == about_id {
+                        info!("GNOME Voice Input v{}", env!("CARGO_PKG_VERSION"));
+                    } else if event.id == quit_id {
+                        info!("Quit requested from tray");
+                        app_state_clone
+                            .shutdown
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
             }
-            info!("Shutting down tray service");
-            handle_clone.shutdown();
         });
 
-        let _ = service.run();
-    });
+        Ok(Self {
+            _tray_icon: tray_icon,
+        })
+    }
+}
+
+pub fn create_tray(app_state: AppState) -> eyre::Result<VoiceInputTray> {
+    let tray = VoiceInputTray::new(app_state)?;
+    Ok(tray)
 }

@@ -25,6 +25,9 @@
             dbus.dev
             xdotool
             xorg.libX11.dev
+            gtk3.dev
+            libappindicator-gtk3
+            librsvg
           ];
 
 

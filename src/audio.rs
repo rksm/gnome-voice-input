@@ -6,12 +6,13 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapRb,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub fn capture_audio(
     audio_tx: mpsc::Sender<Vec<u8>>,
-    recording: Arc<Mutex<bool>>,
+    recording: Arc<AtomicBool>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     audio_config: AudioConfig,
 ) -> Result<()> {
@@ -145,12 +146,10 @@ pub fn capture_audio(
             break;
         }
 
-        let is_recording = recording.lock().unwrap();
-        if !*is_recording {
+        if !recording.load(std::sync::atomic::Ordering::Relaxed) {
             debug!("Recording stopped in audio capture");
             break;
         }
-        drop(is_recording);
 
         // Collect samples from the ring buffer
         let mut samples_collected = 0;

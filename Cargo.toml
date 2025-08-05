@@ -24,7 +24,7 @@ bytes = "1.5"
 enigo = "0.5"
 
 # System tray
-ksni = "0.2"
+tray-icon = "0.19"
 
 # Global hotkeys
 global-hotkey = "0.6"

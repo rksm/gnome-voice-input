@@ -8,7 +8,7 @@ use clap::Parser;
 use eyre::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod audio;
@@ -33,7 +33,7 @@ struct Args {
 pub struct AppState {
     #[allow(dead_code)]
     config: Config,
-    recording: Arc<Mutex<bool>>,
+    recording: Arc<AtomicBool>,
     transcriber: Arc<transcription::Transcriber>,
     shutdown: Arc<AtomicBool>,
     #[allow(dead_code)]
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
 
     let app_state = AppState {
         config: config.clone(),
-        recording: Arc::new(Mutex::new(false)),
+        recording: Arc::new(AtomicBool::new(false)),
         transcriber,
         shutdown: shutdown.clone(),
         debug: args.debug,
@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
 
     let _hotkey_manager = hotkey::setup_hotkeys(&config)?;
 
-    tray::create_tray(app_state.clone());
+    let _tray = tray::create_tray(app_state.clone())?;
 
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
     let shutdown_hotkey = shutdown.clone();
@@ -116,10 +116,7 @@ async fn main() -> Result<()> {
     info!("Shutting down GNOME Voice Input");
 
     // Stop any ongoing recording
-    {
-        let mut recording = app_state.recording.lock().unwrap();
-        *recording = false;
-    }
+    app_state.recording.store(false, Ordering::Relaxed);
 
     // Signal all components to shut down
     shutdown.store(true, Ordering::Relaxed);
@@ -131,11 +128,11 @@ async fn main() -> Result<()> {
     std::process::exit(0);
 }
 
-async fn toggle_recording(app_state: AppState) {
-    let mut recording = app_state.recording.lock().unwrap();
-    *recording = !*recording;
+pub async fn toggle_recording(app_state: AppState) {
+    let was_recording = app_state.recording.fetch_xor(true, Ordering::Relaxed);
+    let is_recording = !was_recording;
 
-    if *recording {
+    if is_recording {
         info!("Starting recording");
         let app_state_clone = app_state.clone();
         tokio::spawn(async move {
@@ -177,8 +174,7 @@ async fn start_recording(app_state: AppState) -> Result<()> {
             keyboard::type_text(&text)?;
         }
 
-        let recording = app_state.recording.lock().unwrap();
-        if !*recording {
+        if !app_state.recording.load(Ordering::Relaxed) {
             debug!("Recording stopped, breaking loop");
             break;
         }
