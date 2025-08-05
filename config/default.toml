@@ -1,0 +1,19 @@
+# GNOME Voice Input Configuration
+
+# Deepgram API key for speech-to-text
+# Get your API key from https://console.deepgram.com/
+deepgram_api_key = ""
+
+[hotkey]
+# Modifier keys: super, ctrl, alt, shift
+modifiers = ["super"]
+# Key to press with modifiers
+key = "v"
+
+[audio]
+# Audio sample rate in Hz
+sample_rate = 16000
+# Number of audio channels (1 for mono, 2 for stereo)
+channels = 1
+# Audio buffer size
+buffer_size = 1024

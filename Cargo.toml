@@ -1,7 +1,48 @@
 [package]
 name = "gnome-voice-input"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Voice input utility for GNOME desktop using Deepgram"
+license = "MIT"
 
 [dependencies]
-enigo = "0.5.0"
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# Audio capture
+cpal = "0.15"
+ringbuf = "0.4"
+
+# Speech-to-text
+deepgram = "0.7"
+reqwest = { version = "0.12", features = ["stream"] }
+
+# Keyboard simulation
+enigo = "0.5"
+
+# System tray
+ksni = "0.2"
+
+# Global hotkeys
+global-hotkey = "0.6"
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Audio processing
+hound = "3.5"
+byteorder = "1.5"
+
+[dev-dependencies]
+tempfile = "3.12"
