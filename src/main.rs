@@ -130,6 +130,7 @@ async fn start_recording(app_state: AppState) -> Result<()> {
             audio_tx,
             app_state_audio.recording.clone(),
             app_state_audio.shutdown.clone(),
+            app_state_audio.config.audio.clone(),
         ) {
             error!("Audio capture error: {}", e);
         }

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use deepgram::{
     common::{
         audio_source::AudioSource,
@@ -6,8 +6,9 @@ use deepgram::{
     },
     Deepgram,
 };
+use std::io::Cursor;
 use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{debug, error};
 
 pub struct Transcriber {
     client: Deepgram,
@@ -26,8 +27,9 @@ impl Transcriber {
         let (text_tx, text_rx) = mpsc::channel(10);
 
         let mut audio_buffer = Vec::new();
-        let buffer_duration_ms = 500;
-        let bytes_per_ms = 16 * 2 / 1000;
+        let buffer_duration_ms = 1000; // Increase to 1 second for better transcription
+                                       // For f32 at 16kHz: 16000 samples/sec * 4 bytes/sample = 64000 bytes/sec = 64 bytes/ms
+        let bytes_per_ms = 64;
         let buffer_size = buffer_duration_ms * bytes_per_ms;
 
         tokio::spawn(async move {
@@ -70,7 +72,13 @@ impl Transcriber {
     }
 
     async fn transcribe_chunk(&self, audio_data: Vec<u8>) -> Result<String> {
-        let source = AudioSource::from_buffer_with_mime_type(audio_data, "audio/wav");
+        debug!("Transcribing chunk of {} bytes", audio_data.len());
+
+        // Convert raw PCM f32 to WAV format
+        let wav_data = self.pcm_to_wav(&audio_data)?;
+        debug!("WAV data size: {} bytes", wav_data.len());
+
+        let source = AudioSource::from_buffer_with_mime_type(wav_data, "audio/wav");
 
         let options = Options::builder()
             .punctuate(true)
@@ -83,7 +91,10 @@ impl Transcriber {
             .transcription()
             .prerecorded(source, &options)
             .await
-            .context("Failed to transcribe audio")?;
+            .map_err(|e| {
+                error!("Deepgram API error: {:?}", e);
+                anyhow::anyhow!("Failed to transcribe audio: {}", e)
+            })?;
 
         let transcript = response
             .results
@@ -94,5 +105,32 @@ impl Transcriber {
             .unwrap_or_default();
 
         Ok(transcript)
+    }
+
+    fn pcm_to_wav(&self, pcm_data: &[u8]) -> Result<Vec<u8>> {
+        let mut cursor = Cursor::new(Vec::new());
+
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)?;
+
+        // Convert f32 bytes to i16 samples and write
+        for chunk in pcm_data.chunks_exact(4) {
+            if chunk.len() == 4 {
+                let f32_bytes: [u8; 4] = chunk.try_into().unwrap();
+                let f32_sample = f32::from_le_bytes(f32_bytes);
+                // Convert f32 (-1.0 to 1.0) to i16 (-32768 to 32767)
+                let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                writer.write_sample(i16_sample)?;
+            }
+        }
+
+        writer.finalize()?;
+        Ok(cursor.into_inner())
     }
 }
