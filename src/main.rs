@@ -84,26 +84,40 @@ async fn main() -> Result<()> {
     let _hotkey_manager = hotkey::setup_hotkeys(&config)?;
 
     // Try to create tray, but don't fail if it doesn't work
-    match tray::create_tray(app_state.clone(), config.clone()) {
+    let tray_handle = match tray::create_tray(app_state.clone(), config.clone()) {
         Ok(Some(tray)) => {
             info!("System tray service started successfully");
             // Run the tray service in a separate thread
-            std::thread::spawn(move || {
+            let tray_shutdown_token = shutdown_token.child_token();
+            Some(std::thread::spawn(move || {
                 info!("Starting tray service thread");
+
+                // Run the tray service with periodic checks for shutdown
+                let handle = tray.handle();
+                std::thread::spawn(move || {
+                    while !tray_shutdown_token.is_cancelled() {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    info!("Tray shutdown requested, stopping service");
+                    handle.shutdown();
+                });
+
                 match tray.run() {
-                    Ok(()) => info!("Tray service thread completed"),
+                    Ok(()) => info!("Tray service thread completed gracefully"),
                     Err(e) => error!("Tray service error: {}", e),
                 }
-            });
+            }))
         }
         Ok(None) => {
             warn!("System tray service not available - app will continue without tray icon");
+            None
         }
         Err(e) => {
             warn!("Failed to create system tray: {}", e);
             warn!("The app will continue to work via hotkey (Super+V)");
+            None
         }
-    }
+    };
 
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
     let hotkey_shutdown_token = shutdown_token.child_token();
@@ -161,9 +175,18 @@ async fn main() -> Result<()> {
 
     // Wait for tasks to complete with a timeout
     let shutdown_timeout = tokio::time::timeout(tokio::time::Duration::from_secs(3), async {
-        // Wait for all tasks to complete
+        // Wait for all async tasks to complete
         let _ = hotkey_handle.await;
         let _ = hotkey_rx_handle.await;
+
+        // Wait for tray thread if it exists
+        if let Some(handle) = tray_handle {
+            tokio::task::spawn_blocking(move || {
+                let _ = handle.join();
+            })
+            .await
+            .ok();
+        }
     })
     .await;
 
