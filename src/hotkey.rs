@@ -1,5 +1,5 @@
 use crate::config::Config;
-use anyhow::{Context, Result};
+use eyre::{Result, WrapErr};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyManager,
@@ -7,7 +7,7 @@ use global_hotkey::{
 use tracing::info;
 
 pub fn setup_hotkeys(config: &Config) -> Result<GlobalHotKeyManager> {
-    let manager = GlobalHotKeyManager::new().context("Failed to create hotkey manager")?;
+    let manager = GlobalHotKeyManager::new().wrap_err("Failed to create hotkey manager")?;
 
     let mut modifiers = Modifiers::empty();
 
@@ -17,7 +17,7 @@ pub fn setup_hotkeys(config: &Config) -> Result<GlobalHotKeyManager> {
             "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
             "alt" => modifiers |= Modifiers::ALT,
             "shift" => modifiers |= Modifiers::SHIFT,
-            _ => anyhow::bail!("Unknown modifier: {}", modifier),
+            _ => bail!("Unknown modifier: {}", modifier),
         }
     }
 
@@ -61,14 +61,14 @@ pub fn setup_hotkeys(config: &Config) -> Result<GlobalHotKeyManager> {
         "f10" => Code::F10,
         "f11" => Code::F11,
         "f12" => Code::F12,
-        _ => anyhow::bail!("Unknown key: {}", config.hotkey.key),
+        _ => bail!("Unknown key: {}", config.hotkey.key),
     };
 
     let hotkey = HotKey::new(Some(modifiers), code);
 
     manager
         .register(hotkey)
-        .context("Failed to register hotkey")?;
+        .wrap_err("Failed to register hotkey")?;
 
     info!(
         "Registered hotkey: {} + {}",

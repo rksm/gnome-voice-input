@@ -1,4 +1,3 @@
-use anyhow::Result;
 use deepgram::{
     common::{
         audio_source::AudioSource,
@@ -6,6 +5,7 @@ use deepgram::{
     },
     Deepgram,
 };
+use eyre::Result;
 use std::io::{Cursor, Write};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -112,7 +112,7 @@ impl Transcriber {
             .await
             .map_err(|e| {
                 error!("Deepgram API error: {:?}", e);
-                anyhow::anyhow!("Failed to transcribe audio: {}", e)
+                eyre!("Failed to transcribe audio: {}", e)
             })?;
 
         let transcript = response

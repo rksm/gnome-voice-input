@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use dirs::config_dir;
+use eyre::{OptionExt, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -49,20 +49,19 @@ impl Config {
         if !config_path.exists() {
             let config = Self::default();
             config.save()?;
-            anyhow::bail!(
+            bail!(
                 "Created default config at {}. Please add your Deepgram API key.",
                 config_path.display()
             );
         }
 
         let contents = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read config from {}", config_path.display()))?;
+            .wrap_err_with(|| format!("Failed to read config from {}", config_path.display()))?;
 
-        let config: Config =
-            toml::from_str(&contents).with_context(|| "Failed to parse config file")?;
+        let config: Config = toml::from_str(&contents).wrap_err("Failed to parse config file")?;
 
         if config.deepgram_api_key.is_empty() {
-            anyhow::bail!("Deepgram API key not set in config file");
+            bail!("Deepgram API key not set in config file");
         }
 
         Ok(config)
@@ -72,22 +71,21 @@ impl Config {
         let config_path = Self::config_path()?;
 
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
+            fs::create_dir_all(parent).wrap_err_with(|| {
                 format!("Failed to create config directory: {}", parent.display())
             })?;
         }
 
-        let contents =
-            toml::to_string_pretty(self).with_context(|| "Failed to serialize config")?;
+        let contents = toml::to_string_pretty(self).wrap_err("Failed to serialize config")?;
 
         fs::write(&config_path, contents)
-            .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+            .wrap_err_with(|| format!("Failed to write config to {}", config_path.display()))?;
 
         Ok(())
     }
 
     fn config_path() -> Result<PathBuf> {
-        let config_dir = config_dir().context("Failed to get config directory")?;
+        let config_dir = config_dir().ok_or_eyre("Failed to get config directory")?;
         Ok(config_dir.join("gnome-voice-input").join("config.toml"))
     }
 }

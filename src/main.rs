@@ -1,8 +1,11 @@
 #[macro_use]
 extern crate tracing;
 
-use anyhow::Result;
+#[macro_use]
+extern crate eyre;
+
 use clap::Parser;
+use eyre::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,6 +43,7 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    color_eyre::install()?;
     let args = Args::parse();
 
     tracing_subscriber::registry()

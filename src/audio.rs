@@ -1,7 +1,7 @@
 use crate::config::AudioConfig;
-use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
+use eyre::{OptionExt, Result, WrapErr};
 use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapRb,
@@ -19,7 +19,7 @@ pub fn capture_audio(
     let host = cpal::default_host();
     let device = host
         .default_input_device()
-        .context("No input device available")?;
+        .ok_or_eyre("No input device available")?;
 
     info!("Using input device: {}", device.name()?);
     info!(
@@ -29,7 +29,7 @@ pub fn capture_audio(
 
     let supported_configs_range = device
         .supported_input_configs()
-        .context("Failed to get supported configs")?;
+        .wrap_err("Failed to get supported configs")?;
 
     // Find the best matching config based on our requirements
     let supported_config = find_best_config(
@@ -129,7 +129,7 @@ pub fn capture_audio(
 
             stream
         }
-        _ => anyhow::bail!("Unsupported sample format: {:?}", sample_format),
+        _ => bail!("Unsupported sample format: {:?}", sample_format),
     };
 
     stream.play()?;
@@ -237,5 +237,5 @@ fn find_best_config(
         }
     }
 
-    best_config.context("No compatible audio configuration found")
+    best_config.ok_or_eyre("No compatible audio configuration found")
 }
