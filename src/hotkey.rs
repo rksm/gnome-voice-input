@@ -4,7 +4,6 @@ use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyManager,
 };
-use tracing::info;
 
 pub fn setup_hotkeys(config: &Config) -> Result<GlobalHotKeyManager> {
     let manager = GlobalHotKeyManager::new().wrap_err("Failed to create hotkey manager")?;

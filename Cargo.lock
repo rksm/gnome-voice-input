@@ -947,6 +947,7 @@ name = "gnome-voice-input"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "bytes",
  "chrono",
  "clap 4.5.42",
  "color-eyre",
@@ -955,6 +956,7 @@ dependencies = [
  "dirs",
  "enigo",
  "eyre",
+ "futures",
  "global-hotkey",
  "hound",
  "ksni",

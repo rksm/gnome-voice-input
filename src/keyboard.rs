@@ -1,6 +1,5 @@
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use eyre::{Result, WrapErr};
-use tracing::debug;
 
 pub fn type_text(text: &str) -> Result<()> {
     let mut enigo = Enigo::new(&Settings::default()).wrap_err("Failed to initialize Enigo")?;

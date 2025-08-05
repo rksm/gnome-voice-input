@@ -17,6 +17,8 @@ ringbuf = "0.4"
 # Speech-to-text
 deepgram = "0.7"
 reqwest = { version = "0.12", features = ["stream"] }
+futures = "0.3"
+bytes = "1.5"
 
 # Keyboard simulation
 enigo = "0.5"

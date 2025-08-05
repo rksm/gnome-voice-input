@@ -8,7 +8,6 @@ use ringbuf::{
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tracing::{error, info};
 
 pub fn capture_audio(
     audio_tx: mpsc::Sender<Vec<u8>>,
@@ -48,7 +47,8 @@ pub fn capture_audio(
 
     let err_fn = |err| error!("Audio stream error: {}", err);
 
-    let (mut producer, mut consumer) = HeapRb::<f32>::new(8192).split();
+    // Use smaller buffer for lower latency streaming
+    let (mut producer, mut consumer) = HeapRb::<f32>::new(4096).split();
 
     let stream = match sample_format {
         SampleFormat::F32 => build_input_stream::<f32, _>(&device, &config, producer, err_fn)?,
@@ -134,7 +134,10 @@ pub fn capture_audio(
 
     stream.play()?;
 
-    let mut buffer = Vec::with_capacity(1024);
+    // Buffer for collecting samples before conversion
+    let mut sample_buffer = Vec::with_capacity(800);
+    let mut total_samples_sent = 0u64;
+    let mut chunks_sent = 0u64;
 
     loop {
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -144,23 +147,71 @@ pub fn capture_audio(
 
         let is_recording = recording.lock().unwrap();
         if !*is_recording {
+            debug!("Recording stopped in audio capture");
             break;
         }
         drop(is_recording);
 
+        // Collect samples from the ring buffer
+        let mut samples_collected = 0;
         while let Some(sample) = consumer.try_pop() {
-            let bytes = sample.to_le_bytes();
-            buffer.extend_from_slice(&bytes);
+            sample_buffer.push(sample);
+            samples_collected += 1;
 
-            if buffer.len() >= 1024 {
-                if audio_tx.blocking_send(buffer.clone()).is_err() {
+            // Send larger chunks for better transcription (800 samples = 50ms at 16kHz)
+            if sample_buffer.len() >= 800 {
+                chunks_sent += 1;
+
+                // Convert f32 samples to i16 (Linear16) format
+                let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
+                for &f32_sample in &sample_buffer {
+                    // Convert f32 (-1.0 to 1.0) to i16 (-32768 to 32767)
+                    let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                    i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
+                }
+
+                total_samples_sent += sample_buffer.len() as u64;
+                debug!(
+                    "Sending audio chunk #{}: {} samples ({} bytes), total sent: {} samples",
+                    chunks_sent,
+                    sample_buffer.len(),
+                    i16_buffer.len(),
+                    total_samples_sent
+                );
+
+                // Save first chunk for debugging
+                if chunks_sent == 1 {
+                    if let Err(e) = std::fs::write("debug_audio_chunk.raw", &i16_buffer) {
+                        error!("Failed to save debug audio chunk: {}", e);
+                    } else {
+                        info!("Saved first audio chunk to debug_audio_chunk.raw for analysis");
+                    }
+                }
+
+                if audio_tx.blocking_send(i16_buffer).is_err() {
+                    info!("Audio receiver dropped, stopping capture");
                     break;
                 }
-                buffer.clear();
+                sample_buffer.clear();
             }
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        if samples_collected > 0 {
+            debug!("Collected {} samples from ring buffer", samples_collected);
+        }
+
+        // Shorter sleep for more responsive streaming
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    // Send any remaining samples
+    if !sample_buffer.is_empty() {
+        let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
+        for &f32_sample in &sample_buffer {
+            let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+            i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
+        }
+        let _ = audio_tx.blocking_send(i16_buffer);
     }
 
     Ok(())

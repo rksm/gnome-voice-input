@@ -1,7 +1,6 @@
 use crate::AppState;
 use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
 use tokio::runtime::Handle;
-use tracing::info;
 
 pub struct VoiceInputTray {
     app_state: AppState,

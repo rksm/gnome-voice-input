@@ -5,13 +5,12 @@ default:
 build:
     cargo build
 
-# Build in release mode
-release:
-    cargo build --release
-
 # Run the application
 run:
-    RUST_LOG=debug cargo run
+    RUST_LOG=info cargo run --release
+
+debug:
+    RUST_LOG=debug cargo run -- --debug
 
 # Run tests
 test:
@@ -30,7 +29,7 @@ clean:
     cargo clean
 
 # Install the application
-install: release
+install:
     cargo install --path .
 
 # Create default config if it doesn't exist

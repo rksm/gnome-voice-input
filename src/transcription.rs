@@ -1,155 +1,189 @@
 use deepgram::{
-    common::{
-        audio_source::AudioSource,
-        options::{Language, Model, Options},
-    },
+    common::options::{Encoding, Language, Model, Options},
     Deepgram,
 };
 use eyre::Result;
-use std::io::{Cursor, Write};
+use futures::stream::{Stream, StreamExt};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
 
 pub struct Transcriber {
     client: Deepgram,
-    debug: bool,
+    _debug: bool,
 }
 
 impl Transcriber {
     pub fn new(api_key: String, debug: bool) -> Self {
         let client = Deepgram::new(&api_key).expect("Failed to create Deepgram client");
-        Self { client, debug }
+        Self {
+            client,
+            _debug: debug,
+        }
     }
 
     pub async fn transcribe_stream(
         self: std::sync::Arc<Self>,
-        mut audio_rx: mpsc::Receiver<Vec<u8>>,
+        audio_rx: mpsc::Receiver<Vec<u8>>,
     ) -> Result<mpsc::Receiver<String>> {
+        debug!("Creating transcription stream");
         let (text_tx, text_rx) = mpsc::channel(10);
 
-        let mut audio_buffer = Vec::new();
-        let buffer_duration_ms = 1000; // Increase to 1 second for better transcription
-                                       // For f32 at 16kHz: 16000 samples/sec * 4 bytes/sample = 64000 bytes/sec = 64 bytes/ms
-        let bytes_per_ms = 64;
-        let buffer_size = buffer_duration_ms * bytes_per_ms;
-
-        tokio::spawn(async move {
-            while let Some(audio_data) = audio_rx.recv().await {
-                audio_buffer.extend_from_slice(&audio_data);
-
-                if audio_buffer.len() >= buffer_size as usize {
-                    let chunk = audio_buffer.clone();
-                    audio_buffer.clear();
-
-                    match self.transcribe_chunk(chunk).await {
-                        Ok(text) => {
-                            debug!(?text);
-                            if !text.trim().is_empty() && text_tx.send(text).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Transcription error: {}", e);
-                        }
-                    }
-                }
-            }
-
-            if !audio_buffer.is_empty() {
-                match self.transcribe_chunk(audio_buffer).await {
-                    Ok(text) => {
-                        if !text.trim().is_empty() {
-                            let _ = text_tx.send(text).await;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Final transcription error: {}", e);
-                    }
-                }
-            }
-        });
-
-        Ok(text_rx)
-    }
-
-    async fn transcribe_chunk(&self, audio_data: Vec<u8>) -> Result<String> {
-        debug!("Transcribing chunk of {} bytes", audio_data.len());
-
-        // Convert raw PCM f32 to WAV format
-        let wav_data = self.pcm_to_wav(&audio_data)?;
-        debug!("WAV data size: {} bytes", wav_data.len());
-
-        // Save WAV file if debug mode is enabled
-        if self.debug {
-            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S_%3f");
-            let filename = format!("deepgram_audio_{timestamp}.wav");
-            match std::fs::File::create(&filename) {
-                Ok(mut file) => {
-                    if let Err(e) = file.write_all(&wav_data) {
-                        error!("Failed to write debug WAV file: {}", e);
-                    } else {
-                        info!("Saved debug WAV file: {}", filename);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to create debug WAV file: {}", e);
-                }
-            }
-        }
-
-        let source = AudioSource::from_buffer_with_mime_type(wav_data, "audio/wav");
-
+        // Configure options for the base request
         let options = Options::builder()
             .punctuate(true)
             .language(Language::en)
             .model(Model::Nova3)
             .build();
 
-        let response = self
-            .client
-            .transcription()
-            .prerecorded(source, &options)
-            .await
-            .map_err(|e| {
-                error!("Deepgram API error: {:?}", e);
-                eyre!("Failed to transcribe audio: {}", e)
-            })?;
+        debug!("Starting WebSocket task with options: {:?}", options);
+        tokio::spawn(async move {
+            match self
+                .start_websocket_stream(options, audio_rx, text_tx)
+                .await
+            {
+                Ok(_) => info!("WebSocket stream completed"),
+                Err(e) => error!("WebSocket stream error: {}", e),
+            }
+        });
 
-        let transcript = response
-            .results
-            .channels
-            .first()
-            .and_then(|channel| channel.alternatives.first())
-            .map(|alt| alt.transcript.clone())
-            .unwrap_or_default();
-
-        Ok(transcript)
+        Ok(text_rx)
     }
 
-    fn pcm_to_wav(&self, pcm_data: &[u8]) -> Result<Vec<u8>> {
-        let mut cursor = Cursor::new(Vec::new());
+    async fn start_websocket_stream(
+        &self,
+        options: Options,
+        audio_rx: mpsc::Receiver<Vec<u8>>,
+        text_tx: mpsc::Sender<String>,
+    ) -> Result<()> {
+        info!("Starting WebSocket connection to Deepgram");
 
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 16000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
+        // Convert the audio receiver into a stream that produces Result<Bytes, _>
+        let audio_stream = create_audio_stream(audio_rx);
 
-        let mut writer = hound::WavWriter::new(&mut cursor, spec)?;
+        // Create WebSocket stream with specific audio settings
+        let mut stream = self
+            .client
+            .transcription()
+            .stream_request_with_options(options)
+            .encoding(Encoding::Linear16)
+            .sample_rate(16000)
+            .channels(1)
+            .keep_alive() // Enable keep-alive
+            .stream(audio_stream)
+            .await?;
 
-        // Convert f32 bytes to i16 samples and write
-        for chunk in pcm_data.chunks_exact(4) {
-            if chunk.len() == 4 {
-                let f32_bytes: [u8; 4] = chunk.try_into().unwrap();
-                let f32_sample = f32::from_le_bytes(f32_bytes);
-                // Convert f32 (-1.0 to 1.0) to i16 (-32768 to 32767)
-                let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                writer.write_sample(i16_sample)?;
+        info!(
+            "WebSocket stream created, request_id: {}",
+            stream.request_id()
+        );
+
+        // Process transcription results
+        let mut result_count = 0;
+        while let Some(result) = stream.next().await {
+            result_count += 1;
+            debug!("Received result #{}: {:?}", result_count, result);
+
+            match result {
+                Ok(response) => {
+                    if let Err(e) = Self::handle_stream_response(response, &text_tx).await {
+                        error!("Error handling response: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Stream error: {:?}", e);
+                }
             }
         }
 
-        writer.finalize()?;
-        Ok(cursor.into_inner())
+        info!("Transcription stream ended after {} results", result_count);
+        Ok(())
     }
+
+    async fn handle_stream_response(
+        response: deepgram::common::stream_response::StreamResponse,
+        text_tx: &mpsc::Sender<String>,
+    ) -> Result<()> {
+        use deepgram::common::stream_response::StreamResponse;
+
+        match response {
+            StreamResponse::TranscriptResponse {
+                is_final, channel, ..
+            } => {
+                debug!("TranscriptResponse - is_final: {}", is_final);
+                debug!(
+                    "Processing transcript, alternatives count: {}",
+                    channel.alternatives.len()
+                );
+
+                // Extract transcript text from the channel
+                if let Some(alternative) = channel.alternatives.into_iter().next() {
+                    let transcript = alternative.transcript.trim();
+                    debug!(
+                        "Transcript text: '{}', confidence: {:.2}, is_final: {}",
+                        transcript, alternative.confidence, is_final
+                    );
+
+                    // For debugging, log interim results too
+                    if !is_final && !transcript.is_empty() {
+                        debug!("Interim transcript: {}", transcript);
+                    }
+
+                    // Only send final transcripts to the user
+                    if is_final && !transcript.is_empty() {
+                        info!(
+                            "Final transcript: {} (confidence: {:.2})",
+                            transcript, alternative.confidence
+                        );
+
+                        if text_tx.send(transcript.to_string()).await.is_err() {
+                            error!("Failed to send transcript - receiver dropped");
+                            return Err(eyre!("Text receiver dropped"));
+                        }
+                    } else if transcript.is_empty() {
+                        debug!("Transcript was empty, ignoring");
+                    }
+                } else {
+                    debug!("No alternatives in transcript response");
+                }
+            }
+            StreamResponse::UtteranceEndResponse { last_word_end, .. } => {
+                debug!("Utterance ended: last word end {:?}", last_word_end);
+            }
+            StreamResponse::SpeechStartedResponse { timestamp, .. } => {
+                debug!("Speech started at timestamp: {:?}", timestamp);
+            }
+            StreamResponse::TerminalResponse {
+                request_id,
+                created,
+                duration,
+                ..
+            } => {
+                debug!(
+                    "Terminal response: request_id={}, created={}, duration={:?}",
+                    request_id, created, duration
+                );
+            }
+            _ => {
+                debug!("Received unknown response type: {:?}", response);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// Convert mpsc::Receiver to a Stream that produces Result<Bytes, Error>
+fn create_audio_stream(
+    mut audio_rx: mpsc::Receiver<Vec<u8>>,
+) -> impl Stream<Item = Result<bytes::Bytes, std::io::Error>> {
+    futures::stream::poll_fn(move |cx| match audio_rx.poll_recv(cx) {
+        std::task::Poll::Ready(Some(data)) => {
+            debug!("Audio stream produced {} bytes", data.len());
+            std::task::Poll::Ready(Some(Ok(bytes::Bytes::from(data))))
+        }
+        std::task::Poll::Ready(None) => {
+            debug!("Audio stream ended");
+            std::task::Poll::Ready(None)
+        }
+        std::task::Poll::Pending => std::task::Poll::Pending,
+    })
 }

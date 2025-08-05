@@ -9,7 +9,6 @@ use eyre::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod audio;
@@ -150,10 +149,12 @@ async fn toggle_recording(app_state: AppState) {
 }
 
 async fn start_recording(app_state: AppState) -> Result<()> {
+    debug!("Starting recording process");
     let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
 
     let app_state_audio = app_state.clone();
     std::thread::spawn(move || {
+        debug!("Audio capture thread started");
         if let Err(e) = audio::capture_audio(
             audio_tx,
             app_state_audio.recording.clone(),
@@ -162,11 +163,15 @@ async fn start_recording(app_state: AppState) -> Result<()> {
         ) {
             error!("Audio capture error: {}", e);
         }
+        debug!("Audio capture thread ended");
     });
 
+    debug!("Creating transcription stream");
     let mut transcription_rx = app_state.transcriber.transcribe_stream(audio_rx).await?;
+    debug!("Transcription stream created, waiting for transcriptions");
 
     while let Some(text) = transcription_rx.recv().await {
+        debug!("Received transcription: '{}'", text);
         if !text.trim().is_empty() {
             info!("Transcribed: {}", text);
             keyboard::type_text(&text)?;
@@ -174,9 +179,11 @@ async fn start_recording(app_state: AppState) -> Result<()> {
 
         let recording = app_state.recording.lock().unwrap();
         if !*recording {
+            debug!("Recording stopped, breaking loop");
             break;
         }
     }
 
+    debug!("Transcription loop ended");
     Ok(())
 }
