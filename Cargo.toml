@@ -24,8 +24,8 @@ bytes = "1.5"
 enigo = "0.5"
 
 # System tray
-tray-icon = "0.19"
-gtk = "0.18"
+ksni = "0.2"
+dbus = "0.9"  # For detecting StatusNotifierWatcher
 
 # Global hotkeys
 global-hotkey = "0.6"

@@ -6,52 +6,53 @@
 
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
-      let pkgs = import nixpkgs { inherit system; };
+      let
+        pkgs = import nixpkgs { inherit system; };
       in
       {
         devShells.default = pkgs.mkShell {
+          # Rust toolchain
           nativeBuildInputs = with pkgs; [
             rustc
             cargo
             clippy
             pkg-config
+            clang # Required for bindgen
           ];
 
+          # System dependencies
           buildInputs = with pkgs; [
+            # Networking
             openssl.dev
-            clang
+
+            # Audio
             alsa-lib.dev
-            lame
+
+            # D-Bus for StatusNotifier detection
             dbus.dev
+
+            # X11 keyboard simulation
             xdotool
             xorg.libX11.dev
-            gtk3.dev
-            libappindicator-gtk3
-            librsvg
-            glib
-            gdk-pixbuf
-            cairo
-            pango
-            atk
+
+            # System tray support (ksni crate dependencies)
+            libappindicator-gtk3 # Or libayatana-appindicator
           ];
 
-
+          # Development tools
           packages = with pkgs; [
             rust-analyzer
             (rustfmt.override { asNightly = true; })
           ];
 
+          # Environment variables
           RUST_BACKTRACE = "1";
           RUST_LOG = "debug";
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+          # Library path for runtime linking
           LD_LIBRARY_PATH = with pkgs; pkgs.lib.makeLibraryPath [
             libappindicator-gtk3
-            gtk3
-            glib
-            gdk-pixbuf
-            cairo
-            pango
-            atk
           ];
         };
       }

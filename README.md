@@ -6,9 +6,10 @@ A voice input utility for the GNOME desktop that transcribes speech using Deepgr
 
 - Real-time speech-to-text transcription using Deepgram API
 - Global hotkey support (default: Super+V)
-- System tray integration
+- System tray integration (requires AppIndicator extension on GNOME)
 - Automatic text insertion into any focused text field
 - Configurable audio settings
+- Desktop environment detection with helpful setup instructions
 
 ## Prerequisites
 
@@ -121,9 +122,38 @@ just check
 - Try running the application with sudo (not recommended for production)
 - Check if your desktop environment supports global hotkeys
 
-### System tray icon not appearing
-- Install the GNOME AppIndicator extension
-- Ensure `libappindicator` is installed on your system
+### System tray icon not appearing (GNOME users)
+
+GNOME removed native system tray support. To see the tray icon, you need to install the AppIndicator extension:
+
+#### Option 1: Install via GNOME Extensions website
+1. Visit https://extensions.gnome.org/extension/615/appindicator-support/
+2. Click "Install" and follow the prompts
+3. Log out and log back in
+
+#### Option 2: Install via package manager
+```bash
+# Ubuntu/Debian
+sudo apt install gnome-shell-extension-appindicator
+
+# Fedora
+sudo dnf install gnome-shell-extension-appindicator
+
+# Arch
+sudo pacman -S gnome-shell-extension-appindicator
+```
+
+After installation:
+1. Enable the extension in GNOME Extensions app
+2. Log out and log back in
+3. The tray icon should now appear in the top panel
+
+**Note:** The app will still work via hotkey (Super+V) even without the tray icon.
+
+### System tray icon not appearing (Other desktops)
+- KDE Plasma: Should work out of the box
+- XFCE: Should work out of the box
+- Ensure `libappindicator` or `libayatana-appindicator` is installed
 
 ## License
 

@@ -1,99 +1,176 @@
 use crate::AppState;
-use tokio::sync::mpsc;
-use tracing::info;
-use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
-    Icon, TrayIcon, TrayIconBuilder,
-};
+use dbus::blocking::Connection;
+use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
+use std::time::Duration;
+use tokio::runtime::Handle;
+use tracing::{error, info, warn};
 
 pub struct VoiceInputTray {
-    _tray_icon: TrayIcon,
+    app_state: AppState,
+    handle: Handle,
 }
 
-impl VoiceInputTray {
-    pub fn new(app_state: AppState) -> eyre::Result<Self> {
-        // Initialize GTK if not already initialized
-        if !gtk::is_initialized() {
-            gtk::init().map_err(|e| eyre!("Failed to initialize GTK: {}", e))?;
-        }
+impl Tray for VoiceInputTray {
+    fn title(&self) -> String {
+        "Voice Input".to_string()
+    }
 
-        // Create menu
-        let menu = Menu::new();
+    fn icon_name(&self) -> String {
+        // Use system theme icon for microphone
+        "audio-input-microphone".to_string()
+    }
 
-        let toggle_item = MenuItem::new("Toggle Recording", true, None);
-        let about_item = MenuItem::new("About", true, None);
-        let quit_item = MenuItem::new("Quit", true, None);
-
-        menu.append(&toggle_item)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&about_item)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&quit_item)?;
-
-        // Use a simple icon - we'll use a default microphone icon
-        // In a real app, you'd load an icon from resources
-        let icon = Icon::from_rgba(vec![255; 32 * 32 * 4], 32, 32)?;
-
-        let tray_icon = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_tooltip("GNOME Voice Input")
-            .with_icon(icon)
-            .build()?;
-
-        // Create a channel for tray events
-        let (event_tx, mut event_rx) = mpsc::channel(10);
-
-        // Handle menu events in a separate blocking task
-        let app_state_clone = app_state.clone();
-        let toggle_id = toggle_item.id().clone();
-        let about_id = about_item.id().clone();
-        let quit_id = quit_item.id().clone();
-
-        tokio::task::spawn_blocking(move || loop {
-            if app_state_clone
-                .shutdown
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                info!("Tray event handler shutting down");
-                break;
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        vec![
+            StandardItem {
+                label: "Toggle Recording".to_string(),
+                icon_name: "media-record".to_string(),
+                activate: Box::new(|tray: &mut Self| {
+                    let app_state = tray.app_state.clone();
+                    tray.handle.spawn(async move {
+                        crate::toggle_recording(app_state).await;
+                    });
+                }),
+                ..Default::default()
             }
-
-            if let Ok(event) =
-                MenuEvent::receiver().recv_timeout(std::time::Duration::from_millis(100))
-            {
-                if event_tx
-                    .blocking_send((event.id, app_state_clone.clone()))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-
-        // Handle events in async task
-        tokio::spawn(async move {
-            while let Some((event_id, app_state_event)) = event_rx.recv().await {
-                if event_id == toggle_id {
-                    info!("Toggle recording from tray");
-                    crate::toggle_recording(app_state_event).await;
-                } else if event_id == about_id {
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "About".to_string(),
+                icon_name: "help-about".to_string(),
+                activate: Box::new(|_| {
                     info!("GNOME Voice Input v{}", env!("CARGO_PKG_VERSION"));
-                } else if event_id == quit_id {
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Quit".to_string(),
+                icon_name: "application-exit".to_string(),
+                activate: Box::new(|tray: &mut Self| {
                     info!("Quit requested from tray");
-                    app_state_event
+                    tray.app_state
                         .shutdown
                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                }),
+                ..Default::default()
             }
-        });
-
-        Ok(Self {
-            _tray_icon: tray_icon,
-        })
+            .into(),
+        ]
     }
 }
 
-pub fn create_tray(app_state: AppState) -> eyre::Result<VoiceInputTray> {
-    let tray = VoiceInputTray::new(app_state)?;
-    Ok(tray)
+/// Check if StatusNotifierWatcher is available on D-Bus
+fn check_status_notifier_support() -> bool {
+    match Connection::new_session() {
+        Ok(conn) => {
+            let proxy = conn.with_proxy(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                Duration::from_millis(500),
+            );
+
+            // Check if StatusNotifierWatcher service is available
+            let result: Result<(Vec<String>,), _> =
+                proxy.method_call("org.freedesktop.DBus", "ListNames", ());
+
+            match result {
+                Ok((names,)) => {
+                    let has_watcher = names.iter().any(|name| {
+                        name == "org.kde.StatusNotifierWatcher"
+                            || name.contains("StatusNotifierWatcher")
+                    });
+
+                    if !has_watcher {
+                        warn!("StatusNotifierWatcher not found on D-Bus");
+                        warn!("App indicators won't appear in GNOME without the AppIndicator extension");
+                        warn!("Install it from: https://extensions.gnome.org/extension/615/appindicator-support/");
+                    }
+
+                    has_watcher
+                }
+                Err(e) => {
+                    error!("Failed to list D-Bus names: {}", e);
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to connect to D-Bus session bus: {}", e);
+            false
+        }
+    }
+}
+
+/// Get the current desktop environment
+fn detect_desktop_environment() -> &'static str {
+    if let Ok(desktop) = std::env::var("XDG_CURRENT_DESKTOP") {
+        if desktop.to_lowercase().contains("gnome") {
+            return "GNOME";
+        } else if desktop.to_lowercase().contains("kde")
+            || desktop.to_lowercase().contains("plasma")
+        {
+            return "KDE/Plasma";
+        } else if desktop.to_lowercase().contains("xfce") {
+            return "XFCE";
+        }
+    }
+
+    if let Ok(session) = std::env::var("DESKTOP_SESSION") {
+        if session.to_lowercase().contains("gnome") {
+            return "GNOME";
+        } else if session.to_lowercase().contains("plasma") {
+            return "KDE/Plasma";
+        }
+    }
+
+    "Unknown"
+}
+
+pub fn create_tray(app_state: AppState) -> eyre::Result<Option<TrayService<VoiceInputTray>>> {
+    let desktop = detect_desktop_environment();
+    info!("Detected desktop environment: {}", desktop);
+
+    // Check for StatusNotifierWatcher support
+    let has_support = check_status_notifier_support();
+
+    if desktop == "GNOME" && !has_support {
+        let separator = "=".repeat(70);
+        warn!("{}", separator);
+        warn!("GNOME SYSTEM TRAY SETUP REQUIRED");
+        warn!("{}", separator);
+        warn!("GNOME doesn't support app indicators natively.");
+        warn!("To see the system tray icon, you need to:");
+        warn!("");
+        warn!("1. Install the AppIndicator extension:");
+        warn!("   https://extensions.gnome.org/extension/615/appindicator-support/");
+        warn!("");
+        warn!("2. Or install via package manager:");
+        warn!("   Ubuntu/Debian: sudo apt install gnome-shell-extension-appindicator");
+        warn!("   Fedora: sudo dnf install gnome-shell-extension-appindicator");
+        warn!("   Arch: sudo pacman -S gnome-shell-extension-appindicator");
+        warn!("");
+        warn!("3. Log out and log back in after installation");
+        warn!("");
+        warn!("The app will continue to work via hotkey (Super+V)");
+        warn!("{}", separator);
+
+        // Still try to create the tray - it will be ready if user installs extension
+    }
+
+    let handle = Handle::current();
+    let tray = VoiceInputTray {
+        app_state: app_state.clone(),
+        handle,
+    };
+
+    let service = TrayService::new(tray);
+    info!("System tray service created successfully");
+    if desktop == "GNOME" && !has_support {
+        info!(
+            "Tray icon registered but won't be visible until AppIndicator extension is installed"
+        );
+    }
+    Ok(Some(service))
 }

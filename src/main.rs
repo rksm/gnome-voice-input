@@ -84,16 +84,19 @@ async fn main() -> Result<()> {
 
     // Try to create tray, but don't fail if it doesn't work
     match tray::create_tray(app_state.clone()) {
-        Ok(tray) => {
-            info!("System tray created successfully");
-            // Keep tray alive
-            Box::leak(Box::new(tray));
+        Ok(Some(tray)) => {
+            info!("System tray service started successfully");
+            // Run the tray service in a separate thread
+            std::thread::spawn(move || {
+                let _ = tray.run();
+            });
+        }
+        Ok(None) => {
+            warn!("System tray service not available - app will continue without tray icon");
         }
         Err(e) => {
-            warn!(
-                "Failed to create system tray: {}. The app will continue without a tray icon.",
-                e
-            );
+            warn!("Failed to create system tray: {}", e);
+            warn!("The app will continue to work via hotkey (Super+V)");
         }
     }
 
