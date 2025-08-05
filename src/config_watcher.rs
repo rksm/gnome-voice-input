@@ -1,14 +1,17 @@
-use crate::{config::Config, hotkey, state::AppState, transcription};
+use crate::{
+    app_manager::{reload_application, AppComponents},
+    config::Config,
+    state::AppState,
+};
 use eyre::Result;
-use global_hotkey::{hotkey::HotKey, GlobalHotKeyManager};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{timeout, Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 pub(crate) struct ConfigWatcher {
     _watcher: RecommendedWatcher,
@@ -69,8 +72,7 @@ impl Drop for ConfigWatcher {
 pub fn setup_config_reload_handler(
     config_path: PathBuf,
     app_state: AppState,
-    hotkey_manager_arc: Arc<tokio::sync::Mutex<GlobalHotKeyManager>>,
-    registered_hotkey_arc: Arc<tokio::sync::Mutex<HotKey>>,
+    initial_components: AppComponents,
     shutdown_token: &CancellationToken,
 ) -> Result<(tokio::task::JoinHandle<()>, ConfigWatcher)> {
     let (config_reload_tx, mut config_reload_rx) = tokio::sync::mpsc::channel(10);
@@ -78,6 +80,10 @@ pub fn setup_config_reload_handler(
         ConfigWatcher::new(config_path, config_reload_tx, shutdown_token.child_token())?;
 
     let shutdown_token_clone = shutdown_token.child_token();
+
+    // Wrap components in Arc<Mutex> to allow updates during reload
+    let components = Arc::new(Mutex::new(Some(initial_components)));
+
     let handle = tokio::spawn(async move {
         let mut last_reload = Instant::now();
         const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
@@ -86,6 +92,16 @@ pub fn setup_config_reload_handler(
             tokio::select! {
                 _ = shutdown_token_clone.cancelled() => {
                     info!("Config reload handler shutting down");
+
+                    // Take ownership of components and teardown
+                    let mut components_guard = components.lock().await;
+                    if let Some(app_components) = components_guard.take() {
+                        info!("Tearing down components during shutdown");
+                        if let Err(e) = app_components.teardown_for_reload().await {
+                            error!("Error tearing down components during shutdown: {}", e);
+                        }
+                    }
+
                     break;
                 }
                 Some(()) = config_reload_rx.recv() => {
@@ -104,59 +120,27 @@ pub fn setup_config_reload_handler(
 
                     match Config::load(app_state.custom_config_path.clone()) {
                         Ok(new_config) => {
-                            // Update config
-                            {
-                                let mut config = app_state.config.write().unwrap();
-                                *config = new_config.clone();
-                            }
-
-                            // Update transcriber
-                            let new_transcriber = Arc::new(transcription::Transcriber::new(
-                                new_config.deepgram_api_key.clone(),
-                                new_config.transcription.clone(),
-                                app_state.debug,
-                            ));
-                            {
-                                let mut transcriber = app_state.transcriber.write().unwrap();
-                                *transcriber = new_transcriber;
-                            }
-
-                            // Update hotkey - reuse existing manager
-                            match hotkey::parse_hotkey(&new_config) {
-                                Ok(new_hotkey) => {
-                                    let manager = hotkey_manager_arc.lock().await;
-                                    let mut old_hotkey = registered_hotkey_arc.lock().await;
-
-                                    // Only update if the hotkey actually changed
-                                    if *old_hotkey != new_hotkey {
-                                        // Unregister old hotkey
-                                        if let Err(e) = manager.unregister(*old_hotkey) {
-                                            warn!("Failed to unregister old hotkey: {}", e);
-                                        }
-
-                                        // Register new hotkey with the same manager
-                                        match manager.register(new_hotkey) {
-                                            Ok(()) => {
-                                                *old_hotkey = new_hotkey;
-                                                info!("Hotkey updated successfully");
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to register new hotkey: {}", e);
-                                                // Try to re-register the old hotkey
-                                                if let Err(e) = manager.register(*old_hotkey) {
-                                                    error!("Failed to restore old hotkey: {}", e);
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        info!("Hotkey unchanged, skipping update");
+                            // Take current components
+                            let mut components_guard = components.lock().await;
+                            if let Some(current_components) = components_guard.take() {
+                                // Reload application with new config
+                                // Pass the main shutdown token so reloaded components respond to app shutdown
+                                match reload_application(new_config, &app_state, current_components, &shutdown_token_clone).await {
+                                    Ok(new_components) => {
+                                        // Store new components
+                                        *components_guard = Some(new_components);
+                                        info!("Configuration and application reloaded successfully");
                                     }
-
-                                    info!("Configuration reloaded successfully");
+                                    Err(e) => {
+                                        error!("Failed to reload application: {}", e);
+                                        error!("Application components have been torn down. Manual restart required.");
+                                        // At this point the app is in a broken state
+                                        // We could try to recover by loading the old config
+                                        // but for now we'll just log the error
+                                    }
                                 }
-                                Err(e) => {
-                                    error!("Failed to parse new hotkey: {}", e);
-                                }
+                            } else {
+                                error!("No components available for reload");
                             }
                         }
                         Err(e) => {

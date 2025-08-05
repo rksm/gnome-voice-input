@@ -21,7 +21,8 @@ The project uses a `justfile` for task management:
 - `just init-config` - Create default config file
 - `just clean` - Clean build artifacts
 - `just watch` - Watch for changes and rebuild
-- `just deps` - Show system dependencies
+- `just deb` - Build Debian package (requires cargo-deb)
+- `just deepgram-costs` - Query Deepgram API costs for last 24 hours
 
 ### Development Environment
 
@@ -29,10 +30,9 @@ Use nix dev shell with `nix develop`, run shell commands with `nix develop -c <c
 
 ### IMPORTANT DEVELOPMENT NOTES
 
-Always run:
-- `just check`
-- `just fmt`
-after making code changes.
+Always run after making code changes:
+- `just check` - Runs fmt, lint, and test
+- `just fmt` - Format code
 
 ## Architecture
 
@@ -45,6 +45,8 @@ after making code changes.
 - **hotkey.rs**: Global hotkey registration and management
 - **tray.rs**: System tray integration using ksni
 - **config.rs**: TOML configuration management with automatic creation
+- **config_watcher.rs**: Live configuration reloading via file system monitoring
+- **state.rs**: Shared application state management
 
 ### Key Dependencies
 
@@ -55,6 +57,7 @@ after making code changes.
 - **ksni**: KDE StatusNotifierItem (system tray) implementation
 - **ringbuf**: Lock-free ring buffer for audio streaming
 - **tokio**: Async runtime
+- **notify**: File system event monitoring for config hot-reload
 
 ### Data Flow
 
@@ -71,6 +74,7 @@ after making code changes.
 - Requires Deepgram API key
 - Configurable hotkey (default: Super+V)
 - Audio settings (sample rate, channels, buffer size)
+- **Live reload**: Configuration changes are automatically detected and applied without restart
 
 ### System Dependencies
 
@@ -78,9 +82,11 @@ after making code changes.
 - `libxdo-dev` for X11 keyboard simulation
 - GNOME desktop environment recommended
 
-## Notes
+## Technical Notes
 
 - Audio processing happens in dedicated thread to avoid blocking async runtime
 - Transcription uses Deepgram Nova3 model with WebSocket streaming for real-time results
 - System tray requires KDE StatusNotifierItem support (install AppIndicator extension on GNOME)
 - Debug mode (`--debug` flag) saves WAV files of audio chunks sent to Deepgram
+- Configuration hot-reloading uses notify crate to watch for file changes
+- Graceful shutdown with proper thread termination and resource cleanup

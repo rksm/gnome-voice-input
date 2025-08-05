@@ -7,10 +7,10 @@ extern crate eyre;
 use clap::Parser;
 use eyre::Result;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod app_manager;
 mod audio;
 mod config;
 mod config_watcher;
@@ -20,8 +20,9 @@ mod state;
 mod transcription;
 mod tray;
 
+use app_manager::initialize_app_components;
 use config::Config;
-use state::{AppState, ShutdownHandles};
+use state::AppState;
 
 #[derive(Parser, Debug)]
 #[command(name = "gnome-voice-input")]
@@ -74,36 +75,28 @@ async fn main() -> Result<()> {
         shutdown_token.clone(),
     );
 
-    let (hotkey_manager, registered_hotkey) = hotkey::setup_hotkeys(&config)?;
+    // Initialize all application components
+    let components =
+        initialize_app_components(config.clone(), app_state.clone(), &shutdown_token).await?;
 
-    let tray_handle = tray::setup_tray(&config, app_state.clone(), &shutdown_token);
-
-    let hotkey_manager_arc = Arc::new(tokio::sync::Mutex::new(hotkey_manager));
-    let registered_hotkey_arc = Arc::new(tokio::sync::Mutex::new(registered_hotkey));
-
+    // Setup config watcher with access to components for reload
     let (config_reload_handle, _config_watcher) = config_watcher::setup_config_reload_handler(
         config_path,
         app_state.clone(),
-        hotkey_manager_arc.clone(),
-        registered_hotkey_arc.clone(),
+        components,
         &shutdown_token,
     )?;
 
-    let (hotkey_handle, hotkey_rx_handle) =
-        hotkey::setup_hotkey_handlers(app_state.clone(), &shutdown_token);
-
+    // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
 
-    let handles = ShutdownHandles {
-        hotkey_handle,
-        hotkey_rx_handle,
-        config_reload_handle,
-        tray_handle,
-        hotkey_manager_arc,
-        registered_hotkey_arc,
-    };
+    info!("Shutting down GNOME Voice Input");
+    shutdown_token.cancel();
 
-    handles.shutdown_app(app_state, shutdown_token).await
+    // Wait for config reload handler to finish
+    let _ = config_reload_handle.await;
+
+    Ok(())
 }
 
 pub async fn toggle_recording(app_state: AppState) {
