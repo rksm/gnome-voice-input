@@ -27,9 +27,6 @@ enigo = "0.5"
 ksni = "0.2"
 dbus = "0.9"  # For detecting StatusNotifierWatcher
 
-# Native GTK dialogs
-gtk4 = { version = "0.9", features = ["v4_12"] }
-
 # Global hotkeys
 global-hotkey = "0.6"
 

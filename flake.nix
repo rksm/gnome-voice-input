@@ -37,14 +37,6 @@
 
             # System tray support (ksni crate dependencies)
             libappindicator-gtk3 # Or libayatana-appindicator
-
-            # GTK4 for native dialogs
-            gtk4
-            glib
-            cairo
-            pango
-            gdk-pixbuf
-            graphene
           ];
 
           # Development tools

@@ -1,6 +1,5 @@
 use crate::{config::Config, AppState};
 use dbus::blocking::Connection;
-use gtk4::{glib, prelude::*, AboutDialog, Application, License};
 use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
 use std::path::Path;
 use std::time::Duration;
@@ -11,59 +10,6 @@ pub struct VoiceInputTray {
     app_state: AppState,
     handle: Handle,
     config: Config,
-}
-
-/// Show the native GTK about dialog
-fn show_about_dialog() {
-    std::thread::spawn(move || {
-        // Initialize GTK if needed
-        let app = Application::builder()
-            .application_id("org.gnome.VoiceInput.About")
-            .build();
-
-        app.connect_activate(move |app| {
-            let about = AboutDialog::builder()
-                .modal(true)
-                .program_name("GNOME Voice Input")
-                .version(env!("CARGO_PKG_VERSION"))
-                .comments(env!("CARGO_PKG_DESCRIPTION"))
-                .authors(vec![env!("CARGO_PKG_AUTHORS")])
-                .license_type(License::MitX11)
-                .website("https://github.com/gnome-voice-input")
-                .website_label("GitHub Repository")
-                .logo_icon_name("audio-input-microphone")
-                .build();
-
-            // Add additional credits
-            about.add_credit_section("Powered by", &["Deepgram - Advanced Speech Recognition"]);
-
-            about.present();
-
-            // Keep the dialog open and quit app when closed
-            let app_clone = app.clone();
-            about.connect_close_request(move |_| {
-                app_clone.quit();
-                glib::Propagation::Proceed
-            });
-        });
-
-        // Run the GTK application
-        let empty: Vec<String> = vec![];
-        let exit_code = app.run_with_args(&empty);
-
-        if exit_code != glib::ExitCode::SUCCESS {
-            error!("GTK about dialog exited with code: {:?}", exit_code);
-
-            // Fallback to console output
-            eprintln!("\n===== About GNOME Voice Input =====");
-            eprintln!("Version: {}", env!("CARGO_PKG_VERSION"));
-            eprintln!("Description: {}", env!("CARGO_PKG_DESCRIPTION"));
-            eprintln!("Authors: {}", env!("CARGO_PKG_AUTHORS"));
-            eprintln!("License: MIT");
-            eprintln!("Powered by Deepgram");
-            eprintln!("====================================\n");
-        }
-    });
 }
 
 /// Check if an icon exists in common icon theme directories
@@ -166,18 +112,6 @@ impl Tray for VoiceInputTray {
                     tray.handle.spawn(async move {
                         crate::toggle_recording(app_state).await;
                     });
-                }),
-                enabled: true,
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: "About".to_string(),
-                icon_name: "help-about".to_string(),
-                activate: Box::new(|_| {
-                    info!("About dialog opened");
-                    show_about_dialog();
                 }),
                 enabled: true,
                 ..Default::default()
