@@ -9,7 +9,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info};
 
-pub fn capture_audio(audio_tx: mpsc::Sender<Vec<u8>>, recording: Arc<Mutex<bool>>) -> Result<()> {
+pub fn capture_audio(
+    audio_tx: mpsc::Sender<Vec<u8>>,
+    recording: Arc<Mutex<bool>>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -73,6 +77,11 @@ pub fn capture_audio(audio_tx: mpsc::Sender<Vec<u8>>, recording: Arc<Mutex<bool>
         let mut buffer = Vec::with_capacity(1024);
 
         loop {
+            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                info!("Audio capture shutting down");
+                break;
+            }
+
             let is_recording = recording.lock().await;
             if !*is_recording {
                 break;
@@ -85,7 +94,7 @@ pub fn capture_audio(audio_tx: mpsc::Sender<Vec<u8>>, recording: Arc<Mutex<bool>
 
                 if buffer.len() >= 1024 {
                     if audio_tx.send(buffer.clone()).await.is_err() {
-                        return;
+                        break;
                     }
                     buffer.clear();
                 }

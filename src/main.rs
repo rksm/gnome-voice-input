@@ -3,6 +3,7 @@ extern crate tracing;
 
 use anyhow::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info};
@@ -23,6 +24,7 @@ pub struct AppState {
     config: Config,
     recording: Arc<Mutex<bool>>,
     transcriber: Arc<transcription::Transcriber>,
+    shutdown: Arc<AtomicBool>,
 }
 
 #[tokio::main]
@@ -42,10 +44,13 @@ async fn main() -> Result<()> {
         config.deepgram_api_key.clone(),
     ));
 
+    let shutdown = Arc::new(AtomicBool::new(false));
+
     let app_state = AppState {
         config: config.clone(),
         recording: Arc::new(Mutex::new(false)),
         transcriber,
+        shutdown: shutdown.clone(),
     };
 
     let _hotkey_manager = hotkey::setup_hotkeys(&config)?;
@@ -53,22 +58,44 @@ async fn main() -> Result<()> {
     tray::create_tray(app_state.clone());
 
     let app_state_hotkey = app_state.clone();
-    tokio::spawn(async move {
-        loop {
-            if let Ok(event) = GlobalHotKeyEvent::receiver().recv() {
+    let shutdown_hotkey = shutdown.clone();
+    std::thread::spawn(move || loop {
+        if shutdown_hotkey.load(Ordering::Relaxed) {
+            info!("Hotkey handler shutting down");
+            break;
+        }
+
+        match GlobalHotKeyEvent::receiver().recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(event) => {
                 if event.state == HotKeyState::Pressed {
                     info!("Hotkey pressed");
-                    toggle_recording(app_state_hotkey.clone()).await;
+                    let app_state_clone = app_state_hotkey.clone();
+                    tokio::runtime::Runtime::new().unwrap().block_on(async {
+                        toggle_recording(app_state_clone).await;
+                    });
                 }
             }
+            Err(_) => continue,
         }
     });
 
     tokio::signal::ctrl_c().await?;
     info!("Shutting down GNOME Voice Input");
 
-    // Tray service will be cleaned up automatically
-    Ok(())
+    // Stop any ongoing recording
+    {
+        let mut recording = app_state.recording.lock().await;
+        *recording = false;
+    }
+
+    // Signal all components to shut down
+    shutdown.store(true, Ordering::Relaxed);
+
+    // Give components time to shut down gracefully
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Force exit if components haven't shut down
+    std::process::exit(0);
 }
 
 async fn toggle_recording(app_state: AppState) {
@@ -93,7 +120,11 @@ async fn start_recording(app_state: AppState) -> Result<()> {
 
     let app_state_audio = app_state.clone();
     std::thread::spawn(move || {
-        if let Err(e) = audio::capture_audio(audio_tx, app_state_audio.recording.clone()) {
+        if let Err(e) = audio::capture_audio(
+            audio_tx,
+            app_state_audio.recording.clone(),
+            app_state_audio.shutdown.clone(),
+        ) {
             error!("Audio capture error: {}", e);
         }
     });
