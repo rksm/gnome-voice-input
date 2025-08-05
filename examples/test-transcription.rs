@@ -2,8 +2,7 @@ use deepgram::{
     common::options::{Encoding, Language, Model, Options},
     Deepgram,
 };
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
