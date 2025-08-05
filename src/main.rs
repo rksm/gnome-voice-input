@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
         debug: args.debug,
     };
 
-    let _hotkey_manager = hotkey::setup_hotkeys(&config)?;
+    let (hotkey_manager, registered_hotkey) = hotkey::setup_hotkeys(&config)?;
 
     // Try to create tray, but don't fail if it doesn't work
     let tray_handle = match tray::create_tray(app_state.clone(), config.clone()) {
@@ -193,13 +193,20 @@ async fn main() -> Result<()> {
     match shutdown_timeout {
         Ok(_) => {
             info!("All tasks shut down gracefully");
-            Ok(())
         }
         Err(_) => {
             warn!("Some tasks did not shut down within timeout, forcing exit");
-            std::process::exit(0);
         }
     }
+
+    // Unregister hotkeys before exiting
+    if let Err(e) = hotkey_manager.unregister(registered_hotkey) {
+        warn!("Failed to unregister hotkey: {}", e);
+    } else {
+        info!("Hotkey unregistered successfully");
+    }
+
+    Ok(())
 }
 
 pub async fn toggle_recording(app_state: AppState) {

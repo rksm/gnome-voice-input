@@ -82,6 +82,16 @@ impl Tray for VoiceInputTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
+        use std::sync::atomic::Ordering;
+
+        // Get current recording status
+        let is_recording = self.app_state.recording.load(Ordering::Relaxed);
+        let status_label = if is_recording {
+            "🔴 Recording Active"
+        } else {
+            "⚪ Recording Inactive"
+        };
+
         // Format the hotkey display string from config
         let hotkey_str = format!(
             "{} + {}",
@@ -103,6 +113,22 @@ impl Tray for VoiceInputTray {
         );
 
         vec![
+            // Status indicator (non-interactive)
+            StandardItem {
+                label: status_label.to_string(),
+                icon_name: if is_recording {
+                    "media-record".to_string()
+                } else {
+                    "media-playback-stop".to_string()
+                },
+                activate: Box::new(|_tray: &mut Self| {
+                    // Non-interactive, do nothing
+                }),
+                enabled: false, // Disabled makes it non-interactive
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
             StandardItem {
                 label: format!("Toggle Recording ({hotkey_str})"),
                 icon_name: "media-record".to_string(),

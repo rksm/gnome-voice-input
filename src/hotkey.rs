@@ -5,7 +5,7 @@ use global_hotkey::{
     GlobalHotKeyManager,
 };
 
-pub fn setup_hotkeys(config: &Config) -> Result<GlobalHotKeyManager> {
+pub fn setup_hotkeys(config: &Config) -> Result<(GlobalHotKeyManager, HotKey)> {
     let manager = GlobalHotKeyManager::new().wrap_err("Failed to create hotkey manager")?;
 
     let mut modifiers = Modifiers::empty();
@@ -75,5 +75,5 @@ pub fn setup_hotkeys(config: &Config) -> Result<GlobalHotKeyManager> {
         config.hotkey.key
     );
 
-    Ok(manager)
+    Ok((manager, hotkey))
 }
