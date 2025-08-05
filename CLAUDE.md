@@ -27,6 +27,13 @@ The project uses a `justfile` for task management:
 
 Use nix dev shell with `nix develop`, run shell commands with `nix develop -c <command>`. E.g. `nix develop -c just check`.
 
+### IMPORTANT DEVELOPMENT NOTES
+
+Always run:
+- `just check`
+- `just fmt`
+after making code changes.
+
 ## Architecture
 
 ### Core Components
@@ -71,9 +78,8 @@ Use nix dev shell with `nix develop`, run shell commands with `nix develop -c <c
 - `libxdo-dev` for X11 keyboard simulation
 - GNOME desktop environment recommended
 
-## Important Notes
+## Notes
 
-- Tests run with `--test-threads=1` due to audio device conflicts
 - Audio processing happens in dedicated thread to avoid blocking async runtime
 - Transcription uses Deepgram Nova3 model with WebSocket streaming for real-time results
 - System tray requires KDE StatusNotifierItem support (install AppIndicator extension on GNOME)

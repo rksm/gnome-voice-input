@@ -83,12 +83,16 @@ async fn main() -> Result<()> {
     let _hotkey_manager = hotkey::setup_hotkeys(&config)?;
 
     // Try to create tray, but don't fail if it doesn't work
-    match tray::create_tray(app_state.clone()) {
+    match tray::create_tray(app_state.clone(), config.clone()) {
         Ok(Some(tray)) => {
             info!("System tray service started successfully");
             // Run the tray service in a separate thread
             std::thread::spawn(move || {
-                let _ = tray.run();
+                info!("Starting tray service thread");
+                match tray.run() {
+                    Ok(()) => info!("Tray service thread completed"),
+                    Err(e) => error!("Tray service error: {}", e),
+                }
             });
         }
         Ok(None) => {
