@@ -5,8 +5,8 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapRb,
 };
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 pub fn capture_audio(
@@ -71,38 +71,34 @@ pub fn capture_audio(
 
     stream.play()?;
 
-    let runtime = tokio::runtime::Runtime::new()?;
+    let mut buffer = Vec::with_capacity(1024);
 
-    runtime.block_on(async {
-        let mut buffer = Vec::with_capacity(1024);
-
-        loop {
-            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                info!("Audio capture shutting down");
-                break;
-            }
-
-            let is_recording = recording.lock().await;
-            if !*is_recording {
-                break;
-            }
-            drop(is_recording);
-
-            while let Some(sample) = consumer.try_pop() {
-                let bytes = sample.to_le_bytes();
-                buffer.extend_from_slice(&bytes);
-
-                if buffer.len() >= 1024 {
-                    if audio_tx.send(buffer.clone()).await.is_err() {
-                        break;
-                    }
-                    buffer.clear();
-                }
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    loop {
+        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            info!("Audio capture shutting down");
+            break;
         }
-    });
+
+        let is_recording = recording.lock().unwrap();
+        if !*is_recording {
+            break;
+        }
+        drop(is_recording);
+
+        while let Some(sample) = consumer.try_pop() {
+            let bytes = sample.to_le_bytes();
+            buffer.extend_from_slice(&bytes);
+
+            if buffer.len() >= 1024 {
+                if audio_tx.blocking_send(buffer.clone()).is_err() {
+                    break;
+                }
+                buffer.clear();
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 
     Ok(())
 }

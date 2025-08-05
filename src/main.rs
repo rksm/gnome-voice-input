@@ -4,8 +4,7 @@ extern crate tracing;
 use anyhow::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -57,8 +56,9 @@ async fn main() -> Result<()> {
 
     tray::create_tray(app_state.clone());
 
-    let app_state_hotkey = app_state.clone();
+    let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
     let shutdown_hotkey = shutdown.clone();
+
     std::thread::spawn(move || loop {
         if shutdown_hotkey.load(Ordering::Relaxed) {
             info!("Hotkey handler shutting down");
@@ -69,13 +69,19 @@ async fn main() -> Result<()> {
             Ok(event) => {
                 if event.state == HotKeyState::Pressed {
                     info!("Hotkey pressed");
-                    let app_state_clone = app_state_hotkey.clone();
-                    tokio::runtime::Runtime::new().unwrap().block_on(async {
-                        toggle_recording(app_state_clone).await;
-                    });
+                    if hotkey_tx.blocking_send(()).is_err() {
+                        break;
+                    }
                 }
             }
             Err(_) => continue,
+        }
+    });
+
+    let app_state_hotkey = app_state.clone();
+    tokio::spawn(async move {
+        while let Some(()) = hotkey_rx.recv().await {
+            toggle_recording(app_state_hotkey.clone()).await;
         }
     });
 
@@ -84,7 +90,7 @@ async fn main() -> Result<()> {
 
     // Stop any ongoing recording
     {
-        let mut recording = app_state.recording.lock().await;
+        let mut recording = app_state.recording.lock().unwrap();
         *recording = false;
     }
 
@@ -99,7 +105,7 @@ async fn main() -> Result<()> {
 }
 
 async fn toggle_recording(app_state: AppState) {
-    let mut recording = app_state.recording.lock().await;
+    let mut recording = app_state.recording.lock().unwrap();
     *recording = !*recording;
 
     if *recording {
@@ -137,7 +143,7 @@ async fn start_recording(app_state: AppState) -> Result<()> {
             keyboard::type_text(&text)?;
         }
 
-        let recording = app_state.recording.lock().await;
+        let recording = app_state.recording.lock().unwrap();
         if !*recording {
             break;
         }
