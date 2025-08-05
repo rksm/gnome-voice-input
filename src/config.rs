@@ -11,6 +11,8 @@ pub struct Config {
     pub audio: AudioConfig,
     #[serde(default)]
     pub transcription: TranscriptionConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +34,14 @@ pub struct AudioConfig {
 pub struct TranscriptionConfig {
     #[serde(default = "default_use_interim_results")]
     pub use_interim_results: bool,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(default = "default_smart_format")]
+    pub smart_format: bool,
+    #[serde(default = "default_punctuate")]
+    pub punctuate: bool,
 }
 
 fn default_audio_chunk_ms() -> u32 {
@@ -42,10 +52,48 @@ fn default_use_interim_results() -> bool {
     true
 }
 
+fn default_model() -> String {
+    "nova-3".to_string()
+}
+
+fn default_language() -> String {
+    "en".to_string()
+}
+
+fn default_smart_format() -> bool {
+    true
+}
+
+fn default_punctuate() -> bool {
+    true
+}
+
+fn default_show_tray_icon() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiConfig {
+    #[serde(default = "default_show_tray_icon")]
+    pub show_tray_icon: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            show_tray_icon: true,
+        }
+    }
+}
+
 impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
             use_interim_results: true,
+            model: default_model(),
+            language: default_language(),
+            smart_format: default_smart_format(),
+            punctuate: default_punctuate(),
         }
     }
 }
@@ -65,23 +113,40 @@ impl Default for Config {
                 audio_chunk_ms: 25,
             },
             transcription: TranscriptionConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
-        let config_path = Self::config_path()?;
-        info!("Loading config from {}", config_path.display());
+    pub fn load(custom_path: Option<PathBuf>) -> Result<Self> {
+        let config_path = match custom_path {
+            Some(path) => {
+                // Use the provided custom config path
+                if !path.exists() {
+                    bail!(
+                        "Config file not found at specified path: {}",
+                        path.display()
+                    );
+                }
+                path
+            }
+            None => {
+                // Use the default config path
+                let default_path = Self::config_path()?;
+                if !default_path.exists() {
+                    let config = Self::default();
+                    config.save()?;
+                    bail!(
+                        "Created default config at {}. Please add your Deepgram API key.",
+                        default_path.display()
+                    );
+                }
+                default_path
+            }
+        };
 
-        if !config_path.exists() {
-            let config = Self::default();
-            config.save()?;
-            bail!(
-                "Created default config at {}. Please add your Deepgram API key.",
-                config_path.display()
-            );
-        }
+        info!("Loading config from {}", config_path.display());
 
         let contents = fs::read_to_string(&config_path)
             .wrap_err_with(|| format!("Failed to read config from {}", config_path.display()))?;

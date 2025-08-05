@@ -29,6 +29,10 @@ struct Args {
     /// Enable debug mode to save WAV files of audio sent to Deepgram
     #[arg(long, default_value_t = false)]
     debug: bool,
+
+    /// Path to custom configuration file
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone)]
@@ -65,9 +69,10 @@ async fn main() -> Result<()> {
         info!("Debug mode enabled - will save WAV files to current directory");
     }
 
-    let config = Config::load()?;
+    let config = Config::load(args.config.clone())?;
     let transcriber = Arc::new(transcription::Transcriber::new(
         config.deepgram_api_key.clone(),
+        config.transcription.clone(),
         args.debug,
     ));
 
@@ -83,40 +88,45 @@ async fn main() -> Result<()> {
 
     let (hotkey_manager, registered_hotkey) = hotkey::setup_hotkeys(&config)?;
 
-    // Try to create tray, but don't fail if it doesn't work
-    let tray_handle = match tray::create_tray(app_state.clone(), config.clone()) {
-        Ok(Some(tray)) => {
-            info!("System tray service started successfully");
-            // Run the tray service in a separate thread
-            let tray_shutdown_token = shutdown_token.child_token();
-            Some(std::thread::spawn(move || {
-                info!("Starting tray service thread");
+    // Try to create tray if enabled in config
+    let tray_handle = if config.ui.show_tray_icon {
+        match tray::create_tray(app_state.clone(), config.clone()) {
+            Ok(Some(tray)) => {
+                info!("System tray service started successfully");
+                // Run the tray service in a separate thread
+                let tray_shutdown_token = shutdown_token.child_token();
+                Some(std::thread::spawn(move || {
+                    info!("Starting tray service thread");
 
-                // Run the tray service with periodic checks for shutdown
-                let handle = tray.handle();
-                std::thread::spawn(move || {
-                    while !tray_shutdown_token.is_cancelled() {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    // Run the tray service with periodic checks for shutdown
+                    let handle = tray.handle();
+                    std::thread::spawn(move || {
+                        while !tray_shutdown_token.is_cancelled() {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        info!("Tray shutdown requested, stopping service");
+                        handle.shutdown();
+                    });
+
+                    match tray.run() {
+                        Ok(()) => info!("Tray service thread completed gracefully"),
+                        Err(e) => error!("Tray service error: {}", e),
                     }
-                    info!("Tray shutdown requested, stopping service");
-                    handle.shutdown();
-                });
-
-                match tray.run() {
-                    Ok(()) => info!("Tray service thread completed gracefully"),
-                    Err(e) => error!("Tray service error: {}", e),
-                }
-            }))
+                }))
+            }
+            Ok(None) => {
+                warn!("System tray service not available - app will continue without tray icon");
+                None
+            }
+            Err(e) => {
+                warn!("Failed to create system tray: {}", e);
+                warn!("The app will continue to work via hotkey (Super+V)");
+                None
+            }
         }
-        Ok(None) => {
-            warn!("System tray service not available - app will continue without tray icon");
-            None
-        }
-        Err(e) => {
-            warn!("Failed to create system tray: {}", e);
-            warn!("The app will continue to work via hotkey (Super+V)");
-            None
-        }
+    } else {
+        info!("System tray icon disabled in configuration");
+        None
     };
 
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);

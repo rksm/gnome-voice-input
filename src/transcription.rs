@@ -6,6 +6,8 @@ use eyre::Result;
 use futures::stream::{Stream, StreamExt};
 use tokio::sync::mpsc;
 
+use crate::config::TranscriptionConfig;
+
 #[derive(Debug, Clone)]
 pub enum TranscriptionResult {
     Interim(String),
@@ -14,14 +16,16 @@ pub enum TranscriptionResult {
 
 pub struct Transcriber {
     client: Deepgram,
+    config: TranscriptionConfig,
     _debug: bool,
 }
 
 impl Transcriber {
-    pub fn new(api_key: String, debug: bool) -> Self {
+    pub fn new(api_key: String, config: TranscriptionConfig, debug: bool) -> Self {
         let client = Deepgram::new(&api_key).expect("Failed to create Deepgram client");
         Self {
             client,
+            config,
             _debug: debug,
         }
     }
@@ -34,11 +38,46 @@ impl Transcriber {
         let (text_tx, text_rx) = mpsc::channel(10);
 
         // Configure options for the base request
-        let options = Options::builder()
-            .punctuate(true)
-            .language(Language::en)
-            .model(Model::Nova3)
-            .build();
+        let mut options_builder = Options::builder()
+            .punctuate(self.config.punctuate)
+            .smart_format(self.config.smart_format);
+
+        // Set language based on config
+        options_builder = match self.config.language.as_str() {
+            "multi" => options_builder.language(Language::multi),
+            "en" => options_builder.language(Language::en),
+            "es" => options_builder.language(Language::es),
+            "fr" => options_builder.language(Language::fr),
+            "de" => options_builder.language(Language::de),
+            "it" => options_builder.language(Language::it),
+            "pt" => options_builder.language(Language::pt),
+            "nl" => options_builder.language(Language::nl),
+            "ja" => options_builder.language(Language::ja),
+            "ko" => options_builder.language(Language::ko),
+            "zh" => options_builder.language(Language::zh),
+            "ru" => options_builder.language(Language::ru),
+            "uk" => options_builder.language(Language::uk),
+            "sv" => options_builder.language(Language::sv),
+            other => {
+                warn!("Unknown language '{other}', trying it anyway",);
+                options_builder.language(Language::Other(other.to_string()))
+            }
+        };
+
+        // Set model based on config
+        options_builder = match self.config.model.as_str() {
+            "nova-3" => options_builder.model(Model::Nova3),
+            "nova-2" => options_builder.model(Model::Nova2),
+            "nova" => options_builder.model(Model::Nova2),
+            "enhanced" => options_builder.model(Model::Nova2),
+            "base" => options_builder.model(Model::Nova2),
+            _ => {
+                warn!("Unknown model '{}', defaulting to Nova3", self.config.model);
+                options_builder.model(Model::Nova3)
+            }
+        };
+
+        let options = options_builder.build();
 
         debug!("Starting WebSocket task with options: {:?}", options);
         tokio::spawn(async move {
@@ -90,7 +129,7 @@ impl Transcriber {
 
             match result {
                 Ok(response) => {
-                    if let Err(e) = Self::handle_stream_response(response, &text_tx).await {
+                    if let Err(e) = self.handle_stream_response(response, &text_tx).await {
                         error!("Error handling response: {}", e);
                     }
                 }
@@ -105,6 +144,7 @@ impl Transcriber {
     }
 
     async fn handle_stream_response(
+        &self,
         response: deepgram::common::stream_response::StreamResponse,
         text_tx: &mpsc::Sender<TranscriptionResult>,
     ) -> Result<()> {
@@ -135,9 +175,12 @@ impl Transcriber {
                                 transcript, alternative.confidence
                             );
                             TranscriptionResult::Final(transcript.to_string())
-                        } else {
+                        } else if self.config.use_interim_results {
                             debug!("Interim transcript: {}", transcript);
                             TranscriptionResult::Interim(transcript.to_string())
+                        } else {
+                            // Skip interim results if disabled
+                            return Ok(());
                         };
 
                         if text_tx.send(result).await.is_err() {

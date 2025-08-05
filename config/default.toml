@@ -25,3 +25,15 @@ audio_chunk_ms = 25
 # When true, shows text as you speak (may include corrections)
 # When false, only shows final, corrected text
 use_interim_results = true
+# Deepgram model to use (nova-3, nova-2, base, etc.)
+model = "nova-3"
+# Language code (en, es, fr, de, etc.)
+language = "en"
+# Enable smart formatting (numbers, dates, times, etc.)
+smart_format = true
+# Enable automatic punctuation
+punctuate = true
+
+[ui]
+# Show system tray icon (requires AppIndicator support on GNOME)
+show_tray_icon = true

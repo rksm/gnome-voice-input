@@ -171,9 +171,15 @@ nix develop -c just test
 1. Start the application:
 ```bash
 gnome-voice-input
+
+# Or with a custom config file:
+gnome-voice-input --config /path/to/config.toml
+
+# Enable debug mode (saves audio chunks as WAV files):
+gnome-voice-input --debug
 ```
 
-2. The app will run in the system tray
+2. The app will run in the system tray (if enabled)
 3. Press Super+V (or your configured hotkey) to start/stop recording
 4. Speak into your microphone
 5. The transcribed text will be typed into the currently focused text field
@@ -197,6 +203,23 @@ key = "v"
 sample_rate = 16000
 channels = 1
 buffer_size = 1024
+audio_chunk_ms = 25  # Audio chunk size in milliseconds
+
+[transcription]
+# Enable interim results for real-time transcription display
+use_interim_results = true
+# Deepgram model (nova-3, nova-2, etc.)
+model = "nova-3"
+# Language code (en, es, fr, de, etc.)
+language = "en"
+# Enable smart formatting (numbers, dates, times)
+smart_format = true
+# Enable automatic punctuation
+punctuate = true
+
+[ui]
+# Show system tray icon
+show_tray_icon = true
 ```
 
 ## Development
