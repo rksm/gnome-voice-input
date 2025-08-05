@@ -1,12 +1,13 @@
-use crate::{config::Config, AppState};
+use crate::{config::Config, state::AppState};
 use dbus::blocking::Connection;
 use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
 use std::path::Path;
 use std::time::Duration;
 use tokio::runtime::Handle;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-pub struct VoiceInputTray {
+struct VoiceInputTray {
     app_state: AppState,
     handle: Handle,
     config: Config,
@@ -226,7 +227,51 @@ fn detect_desktop_environment() -> &'static str {
     "Unknown"
 }
 
-pub fn create_tray(
+pub fn setup_tray(
+    config: &Config,
+    app_state: AppState,
+    shutdown_token: &CancellationToken,
+) -> Option<std::thread::JoinHandle<()>> {
+    if !config.ui.show_tray_icon {
+        info!("System tray icon disabled in configuration");
+        return None;
+    }
+
+    match create_tray(app_state, config.clone()) {
+        Ok(Some(tray)) => {
+            info!("System tray service started successfully");
+            let tray_shutdown_token = shutdown_token.child_token();
+            Some(std::thread::spawn(move || {
+                info!("Starting tray service thread");
+
+                let handle = tray.handle();
+                std::thread::spawn(move || {
+                    while !tray_shutdown_token.is_cancelled() {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    info!("Tray shutdown requested, stopping service");
+                    handle.shutdown();
+                });
+
+                match tray.run() {
+                    Ok(()) => info!("Tray service thread completed gracefully"),
+                    Err(e) => error!("Tray service error: {}", e),
+                }
+            }))
+        }
+        Ok(None) => {
+            warn!("System tray service not available - app will continue without tray icon");
+            None
+        }
+        Err(e) => {
+            warn!("Failed to create system tray: {}", e);
+            warn!("The app will continue to work via hotkey (Super+V)");
+            None
+        }
+    }
+}
+
+fn create_tray(
     app_state: AppState,
     config: Config,
 ) -> eyre::Result<Option<TrayService<VoiceInputTray>>> {

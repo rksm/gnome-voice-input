@@ -1,9 +1,11 @@
-use crate::config::Config;
+use crate::{config::Config, state::AppState};
 use eyre::{Result, WrapErr};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyManager,
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 pub fn setup_hotkeys(config: &Config) -> Result<(GlobalHotKeyManager, HotKey)> {
     let manager = GlobalHotKeyManager::new().wrap_err("Failed to create hotkey manager")?;
@@ -76,4 +78,54 @@ pub fn setup_hotkeys(config: &Config) -> Result<(GlobalHotKeyManager, HotKey)> {
     );
 
     Ok((manager, hotkey))
+}
+
+pub fn setup_hotkey_handlers(
+    app_state: AppState,
+    shutdown_token: &CancellationToken,
+) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel(10);
+    let hotkey_shutdown_token = shutdown_token.child_token();
+
+    let hotkey_handle = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Handle::current();
+
+        loop {
+            if hotkey_shutdown_token.is_cancelled() {
+                info!("Hotkey handler shutting down");
+                break;
+            }
+
+            match GlobalHotKeyEvent::receiver().recv_timeout(std::time::Duration::from_millis(100))
+            {
+                Ok(event) => {
+                    if event.state == HotKeyState::Pressed {
+                        info!("Hotkey pressed");
+                        let tx = hotkey_tx.clone();
+                        runtime.spawn(async move {
+                            let _ = tx.send(()).await;
+                        });
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    });
+
+    let hotkey_rx_shutdown_token = shutdown_token.child_token();
+    let hotkey_rx_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(()) = hotkey_rx.recv() => {
+                    crate::toggle_recording(app_state.clone()).await;
+                }
+                _ = hotkey_rx_shutdown_token.cancelled() => {
+                    info!("Hotkey receiver shutting down");
+                    break;
+                }
+            }
+        }
+    });
+
+    (hotkey_handle, hotkey_rx_handle)
 }

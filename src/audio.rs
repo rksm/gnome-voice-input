@@ -1,13 +1,14 @@
-use crate::config::AudioConfig;
+use crate::{config::AudioConfig, keyboard, state::AppState, transcription::TranscriptionResult};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use eyre::{OptionExt, Result, WrapErr};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info};
 
-pub fn capture_audio(
+fn capture_audio(
     audio_tx: mpsc::Sender<Vec<u8>>,
     recording: Arc<AtomicBool>,
     shutdown_token: CancellationToken,
@@ -204,6 +205,85 @@ pub fn capture_audio(
         let _ = audio_tx.blocking_send(i16_buffer);
     }
 
+    Ok(())
+}
+
+pub async fn start_recording(app_state: AppState) -> Result<()> {
+    debug!("Starting recording process");
+    let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
+
+    let audio_config = app_state.config.read().unwrap().audio.clone();
+    let app_state_audio = app_state.clone();
+    tokio::task::spawn_blocking(move || {
+        debug!("Audio capture task started");
+        if let Err(e) = capture_audio(
+            audio_tx,
+            app_state_audio.recording.clone(),
+            app_state_audio.shutdown_token.child_token(),
+            audio_config,
+        ) {
+            error!("Audio capture error: {}", e);
+        }
+        debug!("Audio capture task ended");
+    });
+
+    debug!("Creating transcription stream");
+    let transcriber = app_state.transcriber.read().unwrap().clone();
+    let mut transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
+    debug!("Transcription stream created, waiting for transcriptions");
+
+    let use_interim_results = app_state
+        .config
+        .read()
+        .unwrap()
+        .transcription
+        .use_interim_results;
+    let mut last_interim_length = 0;
+
+    while let Some(result) = transcription_rx.recv().await {
+        match result {
+            TranscriptionResult::Interim(text) => {
+                debug!("Received interim transcription: '{}'", text);
+                if use_interim_results && !text.trim().is_empty() {
+                    // Delete previous interim text by sending backspaces
+                    if last_interim_length > 0 {
+                        for _ in 0..last_interim_length {
+                            keyboard::press_key(enigo::Key::Backspace)?;
+                        }
+                    }
+
+                    // Type new interim text
+                    keyboard::type_text(&text)?;
+                    last_interim_length = text.chars().count();
+                }
+            }
+            TranscriptionResult::Final(text) => {
+                debug!("Received final transcription: '{}'", text);
+                if !text.trim().is_empty() {
+                    // Delete previous interim text if any
+                    if use_interim_results && last_interim_length > 0 {
+                        for _ in 0..last_interim_length {
+                            keyboard::press_key(enigo::Key::Backspace)?;
+                        }
+                        last_interim_length = 0;
+                    }
+
+                    info!("Final transcribed: {}", text);
+                    keyboard::type_text(&text)?;
+
+                    // Add a space after final transcription for better flow
+                    keyboard::type_text(" ")?;
+                }
+            }
+        }
+
+        if !app_state.recording.load(Ordering::Relaxed) {
+            debug!("Recording stopped, breaking loop");
+            break;
+        }
+    }
+
+    debug!("Transcription loop ended");
     Ok(())
 }
 
