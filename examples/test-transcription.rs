@@ -1,8 +1,10 @@
+#[macro_use]
+extern crate tracing;
+
 use deepgram::{
     common::options::{Encoding, Language, Model, Options},
     Deepgram,
 };
-use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

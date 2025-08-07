@@ -11,7 +11,6 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{timeout, Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
 
 pub(crate) struct ConfigWatcher {
     _watcher: RecommendedWatcher,

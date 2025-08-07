@@ -5,7 +5,6 @@ use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::info;
 
 /// Parse hotkey configuration into a HotKey without registering it
 pub fn parse_hotkey(config: &Config) -> Result<HotKey> {

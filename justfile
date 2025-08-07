@@ -22,7 +22,7 @@ fmt:
 
 # Run lints
 lint:
-    cargo clippy -- -D warnings
+    cargo clippy --workspace --examples -- -D warnings
 
 # Clean build artifacts
 clean:

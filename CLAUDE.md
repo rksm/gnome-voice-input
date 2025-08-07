@@ -31,6 +31,7 @@ Use nix dev shell with `nix develop`, run shell commands with `nix develop -c <c
 ### IMPORTANT DEVELOPMENT NOTES
 
 Always run after making code changes:
+
 - `just check` - Runs fmt, lint, and test
 - `just fmt` - Format code
 
@@ -40,13 +41,16 @@ Always run after making code changes:
 
 - **main.rs**: Application entry point, orchestrates components and handles global hotkey events
 - **audio.rs**: Audio capture using cpal, handles microphone input and ring buffer streaming
+- **audio_utils.rs**: Shared audio utilities for different capture scenarios (main app vs examples)
 - **transcription.rs**: Deepgram API integration for speech-to-text, processes audio chunks
+- **transcription_utils.rs**: Shared transcription utilities and result types
 - **keyboard.rs**: Text insertion using enigo for cross-platform keyboard simulation
 - **hotkey.rs**: Global hotkey registration and management
 - **tray.rs**: System tray integration using ksni
 - **config.rs**: TOML configuration management with automatic creation
 - **config_watcher.rs**: Live configuration reloading via file system monitoring
 - **state.rs**: Shared application state management
+- **lib.rs**: Public library API for reusable components
 
 ### Key Dependencies
 
@@ -90,3 +94,50 @@ Always run after making code changes:
 - Debug mode (`--debug` flag) saves WAV files of audio chunks sent to Deepgram
 - Configuration hot-reloading uses notify crate to watch for file changes
 - Graceful shutdown with proper thread termination and resource cleanup
+- Library architecture allows shared utilities between main app and examples (see `examples/simple-transcriber.rs`)
+
+### Testing
+
+- Tests must run single-threaded (`--test-threads=1`) due to audio device access limitations
+- Use `just test` which automatically handles this requirement
+
+## Important style guide
+
+### Macro imports
+
+We use global macro imports for some crates, like `tracing`. Don't import macros for these crates directly.
+
+Example:
+
+```rust
+#[macro_use]
+extern crate tracing;
+```
+
+✅ Ok to directly use macros:
+
+```rust
+info!("This is a log message");
+```
+
+❌ Not ok to import macros directly:
+
+```rust
+use tracing::info;
+info!("This is a log message");
+```
+
+### No dead code
+
+Unless specified by the user, never leave dead code in the repository. In particular, after making changes, ensure that all unused functions, variables, and imports are removed.
+
+❌ `#[allow(dead_code)]`
+
+### No lazy imports and exports
+
+- Avoid using `use module_name::*`. Instead, explicitly import only the necessary items.
+- Avoid using `pub use module_name::*`. Instead, explicitly re-export only the necessary items.
+
+### Clear exports from sub-systems
+
+For Rust modules that clearly represent sub-systems and their own abstraction layer, don't export types inside the module with `pub use`. Instead have a `mod.rs` file that re-exports the types clearly.

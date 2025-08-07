@@ -2,113 +2,117 @@
 extern crate tracing;
 
 use cpal::traits::StreamTrait;
-use deepgram::{
-    common::options::{Encoding, Language, Model, Options},
-    Deepgram,
+use eyre::Result;
+use gnome_voice_input::audio_utils::{init_simple_audio_capture, process_simple_audio};
+use gnome_voice_input::{
+    process_transcription_with_handler, AppState, Config, ConsoleTranscriptionHandler,
 };
-use eyre::{Result, WrapErr};
-use futures::stream::StreamExt;
-use gnome_voice_input::audio_utils::{
-    create_audio_stream, init_simple_audio_capture, process_simple_audio,
-};
-use gnome_voice_input::transcription_utils::{handle_simple_response, TranscriptionResult};
 use std::env;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::sync::atomic::Ordering;
+use tokio_util::sync::CancellationToken;
 
 fn main() -> Result<()> {
     // Initialize tracing for logging
     tracing_subscriber::fmt::init();
-
-    // Get Deepgram API key from environment
-    let api_key =
-        env::var("DEEPGRAM_API_KEY").wrap_err("DEEPGRAM_API_KEY environment variable not set")?;
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         println!("Starting simple transcriber...");
         println!("Press Ctrl+C to stop");
 
-        let recording = Arc::new(AtomicBool::new(true));
-        let recording_clone = recording.clone();
+        // Create config from environment or default
+        let config = create_simple_config()?;
+
+        // Create shared app state
+        let shutdown_token = CancellationToken::new();
+        let app_state = AppState::new(config, true, None, shutdown_token.clone());
 
         // Handle Ctrl+C
+        let shutdown_for_signal = shutdown_token.clone();
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.unwrap();
             println!("\nStopping transcription...");
-            recording_clone.store(false, Ordering::Relaxed);
+            shutdown_for_signal.cancel();
         });
 
-        // Create audio channel
-        let (audio_tx, audio_rx) = mpsc::channel(100);
+        // Start recording using shared state and custom output handler
+        app_state.recording.store(true, Ordering::Relaxed);
 
-        // Initialize audio capture
-        let audio_capture = init_simple_audio_capture()?;
-
-        // Start audio capture in blocking task
-        let recording_audio = recording.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = process_simple_audio(audio_capture.sample_rx, audio_tx, recording_audio)
-            {
-                warn!("Audio capture failed: {e}");
-            }
-        });
-
-        // Start the audio stream
-        audio_capture.stream.play()?;
-
-        // Start transcription
-        let client = Deepgram::new(&api_key).expect("Failed to create Deepgram client");
-
-        let options = Options::builder()
-            .language(Language::en)
-            .model(Model::Nova3)
-            .punctuate(true)
-            .smart_format(true)
-            .build();
-
-        let audio_stream = create_audio_stream(audio_rx);
-
-        let mut stream = client
-            .transcription()
-            .stream_request_with_options(options)
-            .encoding(Encoding::Linear16)
-            .sample_rate(16000)
-            .channels(1)
-            .keep_alive()
-            .stream(audio_stream)
-            .await?;
-
-        println!("Transcription started. Speak into your microphone...\n");
-
-        // Process transcription results
-        while let Some(result) = stream.next().await {
-            if !recording.load(Ordering::Relaxed) {
-                break;
-            }
-
-            match result {
-                Ok(response) => {
-                    if let Some(transcript_result) = handle_simple_response(response) {
-                        match transcript_result {
-                            TranscriptionResult::Interim(text) => {
-                                info!("\rInterim: {}", text);
-                                std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                            }
-                            TranscriptionResult::Final(text) => {
-                                info!("\nFinal: {}", text);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Stream error: {:?}", e);
-                }
-            }
+        if let Err(e) = start_transcription_only(app_state.clone()).await {
+            error!("Transcription failed: {}", e);
         }
 
-        info!("\nTranscription stopped.");
+        println!("Transcription stopped.");
         Ok(())
     })
+}
+
+/// Create a simple config for the example
+fn create_simple_config() -> Result<Config> {
+    // Try to get API key from environment, or use a placeholder for testing config creation
+    let api_key = env::var("DEEPGRAM_API_KEY").unwrap_or_else(|_| {
+        println!(
+            "Warning: DEEPGRAM_API_KEY not set. Using placeholder - transcription will not work."
+        );
+        "placeholder".to_string()
+    });
+
+    let mut config = Config {
+        deepgram_api_key: api_key,
+        ..Default::default()
+    };
+
+    // Enable interim results for more interactive experience
+    config.transcription.use_interim_results = true;
+
+    Ok(config)
+}
+
+/// Start transcription using shared state but with stdout output instead of keyboard typing
+async fn start_transcription_only(app_state: AppState) -> Result<()> {
+    debug!("Starting transcription-only process");
+    let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
+
+    // Initialize audio capture - this will fail if device doesn't support 16kHz
+    let audio_capture = init_simple_audio_capture()?;
+
+    // Start audio capture in blocking task
+    let recording = app_state.recording.clone();
+    let shutdown_token = app_state.shutdown_token.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = process_simple_audio(audio_capture.sample_rx, audio_tx, recording) {
+            error!("Audio capture error: {}", e);
+        }
+    });
+
+    // Start the audio stream
+    audio_capture.stream.play()?;
+
+    debug!("Creating transcription stream");
+    let transcriber = app_state.transcriber.read().unwrap().clone();
+    let transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
+    debug!("Transcription stream created, waiting for transcriptions");
+
+    let handler = ConsoleTranscriptionHandler::new();
+
+    tokio::select! {
+        result = process_transcription_with_handler(transcription_rx, handler) => {
+            if let Err(e) = result {
+                error!("Transcription processing error: {}", e);
+            }
+        }
+        _ = shutdown_token.cancelled() => {
+            debug!("Shutdown requested, breaking transcription loop");
+        }
+        _ = async {
+            while app_state.recording.load(Ordering::Relaxed) {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        } => {
+            debug!("Recording stopped, breaking loop");
+        }
+    }
+
+    debug!("Transcription loop ended");
+    Ok(())
 }

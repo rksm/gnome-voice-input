@@ -66,5 +66,8 @@ chrono = "0.4"
 # File watching
 notify = "6.1"
 
+# Async traits
+async-trait = "0.1"
+
 [dev-dependencies]
 tempfile = "3.12"

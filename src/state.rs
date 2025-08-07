@@ -14,7 +14,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn new(
+    pub fn new(
         config: Config,
         debug: bool,
         custom_config_path: Option<std::path::PathBuf>,

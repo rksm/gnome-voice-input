@@ -6,8 +6,8 @@ use eyre::Result;
 use futures::stream::StreamExt;
 use tokio::sync::mpsc;
 
-use crate::config::TranscriptionConfig;
-use crate::transcription_utils::{create_audio_stream, handle_full_response, TranscriptionResult};
+use crate::transcription_utils::{handle_full_response, TranscriptionResult};
+use crate::{audio_utils::create_audio_stream, config::TranscriptionConfig};
 
 pub struct Transcriber {
     client: Deepgram,

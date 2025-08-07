@@ -5,59 +5,13 @@ use futures::stream::Stream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
-
-use crate::config::AudioConfig;
-
-pub struct AudioCapture {
-    pub sample_rx: std::sync::mpsc::Receiver<f32>,
-    pub stream: cpal::Stream,
-}
 
 pub struct SimpleAudioCapture {
     pub sample_rx: std::sync::mpsc::Receiver<f32>,
     pub stream: cpal::Stream,
 }
 
-/// Initialize audio capture with the given configuration
-pub fn init_audio_capture(audio_config: &AudioConfig) -> Result<AudioCapture> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_eyre("No input device available")?;
-
-    info!("Using input device: {}", device.name()?);
-    info!(
-        "Requested config: {} channels, {} Hz",
-        audio_config.channels, audio_config.sample_rate
-    );
-
-    let supported_configs_range = device.supported_input_configs()?;
-
-    // Find the best matching config based on our requirements
-    let supported_config = find_best_config(
-        supported_configs_range,
-        audio_config.sample_rate,
-        audio_config.channels,
-    )?;
-
-    let config = supported_config.config();
-    let sample_format = supported_config.sample_format();
-
-    info!(
-        "Audio config: {} channels, {} Hz, {:?}",
-        config.channels, config.sample_rate.0, sample_format
-    );
-
-    let err_fn = |err| error!("Audio stream error: {}", err);
-    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<f32>();
-
-    let stream = build_stream_for_format(sample_format, &device, &config, sample_tx, err_fn)?;
-
-    Ok(AudioCapture { sample_rx, stream })
-}
-
-/// Initialize simple audio capture with default settings
+/// Initialize simple audio capture with 16kHz requirement
 pub fn init_simple_audio_capture() -> Result<SimpleAudioCapture> {
     let host = cpal::default_host();
     let device = host
@@ -66,14 +20,42 @@ pub fn init_simple_audio_capture() -> Result<SimpleAudioCapture> {
 
     println!("Using input device: {}", device.name()?);
 
-    let config = device.default_input_config()?;
-    let sample_format = config.sample_format();
-    let config = config.config();
+    let supported_configs_range = device.supported_input_configs()?;
+
+    // Find a config that supports exactly 16kHz
+    let target_sample_rate = 16000u32;
+    let mut compatible_config = None;
+
+    for config_range in supported_configs_range {
+        let min_rate = config_range.min_sample_rate().0;
+        let max_rate = config_range.max_sample_rate().0;
+
+        // Check if 16kHz is supported in this range
+        if target_sample_rate >= min_rate && target_sample_rate <= max_rate {
+            compatible_config =
+                Some(config_range.with_sample_rate(cpal::SampleRate(target_sample_rate)));
+            break;
+        }
+    }
+
+    let supported_config = compatible_config
+        .ok_or_eyre("Audio device does not support 16kHz sample rate. Simple transcriber requires exactly 16kHz.")?;
+
+    let config = supported_config.config();
+    let sample_format = supported_config.sample_format();
 
     println!(
         "Audio config: {} channels, {} Hz, {:?}",
         config.channels, config.sample_rate.0, sample_format
     );
+
+    // Verify we got exactly 16kHz
+    if config.sample_rate.0 != target_sample_rate {
+        return Err(eyre::eyre!(
+            "Failed to configure audio device for 16kHz. Got {}Hz instead.",
+            config.sample_rate.0
+        ));
+    }
 
     let err_fn = |err| error!("Audio stream error: {}", err);
     let (sample_tx, sample_rx) = std::sync::mpsc::channel::<f32>();
@@ -165,86 +147,6 @@ fn build_stream_for_format(
     }
 }
 
-/// Capture and process audio samples into chunks
-pub fn process_audio_chunks(
-    sample_rx: std::sync::mpsc::Receiver<f32>,
-    audio_tx: mpsc::Sender<Vec<u8>>,
-    recording: Arc<AtomicBool>,
-    samples_per_chunk: usize,
-) -> Result<()> {
-    let mut sample_buffer = Vec::with_capacity(samples_per_chunk);
-    let mut total_samples_sent = 0u64;
-    let mut chunks_sent = 0u64;
-
-    loop {
-        if !recording.load(Ordering::Relaxed) {
-            break;
-        }
-
-        match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
-            Ok(sample) => {
-                sample_buffer.push(sample);
-
-                // Continue collecting samples up to chunk size
-                while sample_buffer.len() < samples_per_chunk {
-                    match sample_rx.try_recv() {
-                        Ok(s) => sample_buffer.push(s),
-                        Err(_) => break,
-                    }
-                }
-
-                // Send chunk if we have enough samples
-                if sample_buffer.len() >= samples_per_chunk {
-                    chunks_sent += 1;
-
-                    // Convert f32 samples to i16 (Linear16) format
-                    let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
-                    for &f32_sample in &sample_buffer {
-                        // Convert f32 (-1.0 to 1.0) to i16 (-32768 to 32767)
-                        let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                        i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
-                    }
-
-                    total_samples_sent += sample_buffer.len() as u64;
-                    debug!(
-                        "Sending audio chunk #{}: {} samples ({} bytes), total sent: {} samples",
-                        chunks_sent,
-                        sample_buffer.len(),
-                        i16_buffer.len(),
-                        total_samples_sent
-                    );
-
-                    if audio_tx.blocking_send(i16_buffer).is_err() {
-                        info!("Audio receiver dropped, stopping capture");
-                        break;
-                    }
-                    sample_buffer.clear();
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // Normal timeout, continue loop
-                continue;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                info!("Audio sample channel disconnected");
-                break;
-            }
-        }
-    }
-
-    // Send any remaining samples
-    if !sample_buffer.is_empty() {
-        let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
-        for &f32_sample in &sample_buffer {
-            let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-            i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
-        }
-        let _ = audio_tx.blocking_send(i16_buffer);
-    }
-
-    Ok(())
-}
-
 /// Build input stream for a specific sample type
 fn build_input_stream<T>(
     device: &cpal::Device,
@@ -271,63 +173,15 @@ where
     Ok(stream)
 }
 
-/// Find best audio configuration based on requirements
-fn find_best_config(
-    configs: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
-    target_sample_rate: u32,
-    target_channels: u16,
-) -> Result<cpal::SupportedStreamConfig> {
-    let mut best_config = None;
-    let mut best_score = f32::MAX;
-
-    for config_range in configs {
-        // Check if this config supports our channel count
-        if config_range.channels() != target_channels {
-            continue;
-        }
-
-        // Check if target sample rate is in range
-        let min_rate = config_range.min_sample_rate().0;
-        let max_rate = config_range.max_sample_rate().0;
-
-        let sample_rate = if target_sample_rate >= min_rate && target_sample_rate <= max_rate {
-            cpal::SampleRate(target_sample_rate)
-        } else if target_sample_rate < min_rate {
-            config_range.min_sample_rate()
-        } else {
-            config_range.max_sample_rate()
-        };
-
-        // Calculate score (lower is better)
-        let rate_diff = (sample_rate.0 as f32 - target_sample_rate as f32).abs();
-        let format_score = match config_range.sample_format() {
-            SampleFormat::F32 => 0.0,  // Preferred
-            SampleFormat::I16 => 10.0, // Good
-            SampleFormat::I32 => 15.0, // Good but more processing
-            SampleFormat::U16 => 20.0, // Acceptable
-            SampleFormat::U8 => 30.0,  // Less preferred but supported
-            _ => 1000.0,               // Not supported
-        };
-
-        let score = rate_diff / 1000.0 + format_score;
-
-        if score < best_score {
-            best_score = score;
-            best_config = Some(config_range.with_sample_rate(sample_rate));
-        }
-    }
-
-    best_config.ok_or_eyre("No compatible audio configuration found")
-}
-
-/// Process audio samples for simple use cases
+/// Process audio samples for simple use cases (requires 16kHz input)
 pub fn process_simple_audio(
     sample_rx: std::sync::mpsc::Receiver<f32>,
     audio_tx: mpsc::Sender<Vec<u8>>,
     recording: Arc<AtomicBool>,
 ) -> Result<()> {
-    let samples_per_chunk = (16000 * 25 / 1000) as usize; // 25ms chunks at 16kHz
+    let samples_per_chunk = (16000 * 25 / 1000) as usize; // 25ms chunks at 16kHz = 400 samples
     let mut sample_buffer = Vec::with_capacity(samples_per_chunk);
+    let mut chunks_sent = 0;
 
     loop {
         if !recording.load(Ordering::Relaxed) {
@@ -348,22 +202,43 @@ pub fn process_simple_audio(
 
                 // Send chunk if we have enough samples
                 if sample_buffer.len() >= samples_per_chunk {
+                    chunks_sent += 1;
                     // Convert f32 samples to i16 (Linear16) format
-                    let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
-                    for &f32_sample in &sample_buffer {
+                    let mut i16_buffer = Vec::with_capacity(samples_per_chunk * 2);
+                    for &f32_sample in &sample_buffer[..samples_per_chunk] {
                         let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
                         i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
                     }
 
+                    debug!(
+                        "Sending audio chunk #{}: {} samples ({} bytes) [16kHz]",
+                        chunks_sent,
+                        samples_per_chunk,
+                        i16_buffer.len()
+                    );
+
                     if audio_tx.blocking_send(i16_buffer).is_err() {
+                        debug!("Audio receiver dropped, stopping simple audio capture");
                         break;
                     }
-                    sample_buffer.clear();
+
+                    // Remove sent samples from buffer
+                    sample_buffer.drain(0..samples_per_chunk);
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
+    }
+
+    // Send any remaining samples
+    if !sample_buffer.is_empty() {
+        let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
+        for &f32_sample in &sample_buffer {
+            let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+            i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
+        }
+        let _ = audio_tx.blocking_send(i16_buffer);
     }
 
     Ok(())
@@ -375,7 +250,7 @@ pub fn create_audio_stream(
 ) -> impl Stream<Item = Result<bytes::Bytes, std::io::Error>> {
     futures::stream::poll_fn(move |cx| match audio_rx.poll_recv(cx) {
         std::task::Poll::Ready(Some(data)) => {
-            debug!("Audio stream produced {} bytes", data.len());
+            trace!("Audio stream produced {} bytes", data.len());
             std::task::Poll::Ready(Some(Ok(bytes::Bytes::from(data))))
         }
         std::task::Poll::Ready(None) => {

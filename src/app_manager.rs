@@ -4,7 +4,6 @@ use global_hotkey::{hotkey::HotKey, GlobalHotKeyManager};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
 
 /// Represents all the running components of the application that need to be
 /// managed during lifecycle events (startup, reload, shutdown)

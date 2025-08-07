@@ -15,6 +15,7 @@ mod audio;
 mod audio_utils;
 mod config;
 mod config_watcher;
+mod handlers;
 mod hotkey;
 mod keyboard;
 mod state;

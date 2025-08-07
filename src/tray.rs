@@ -5,7 +5,6 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
 
 struct VoiceInputTray {
     app_state: AppState,

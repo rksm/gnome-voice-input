@@ -1,6 +1,4 @@
-use crate::{
-    config::AudioConfig, keyboard, state::AppState, transcription_utils::TranscriptionResult,
-};
+use crate::{config::AudioConfig, handlers::KeyboardTranscriptionHandler, state::AppState};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use eyre::{OptionExt, Result, WrapErr};
@@ -8,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
 
 fn capture_audio(
     audio_tx: mpsc::Sender<Vec<u8>>,
@@ -231,7 +228,7 @@ pub async fn start_recording(app_state: AppState) -> Result<()> {
 
     debug!("Creating transcription stream");
     let transcriber = app_state.transcriber.read().unwrap().clone();
-    let mut transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
+    let transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
     debug!("Transcription stream created, waiting for transcriptions");
 
     let use_interim_results = app_state
@@ -240,48 +237,22 @@ pub async fn start_recording(app_state: AppState) -> Result<()> {
         .unwrap()
         .transcription
         .use_interim_results;
-    let mut last_interim_length = 0;
 
-    while let Some(result) = transcription_rx.recv().await {
-        match result {
-            TranscriptionResult::Interim(text) => {
-                debug!("Received interim transcription: '{}'", text);
-                if use_interim_results && !text.trim().is_empty() {
-                    // Delete previous interim text by sending backspaces
-                    if last_interim_length > 0 {
-                        for _ in 0..last_interim_length {
-                            keyboard::press_key(enigo::Key::Backspace)?;
-                        }
-                    }
+    let handler = KeyboardTranscriptionHandler::new(use_interim_results);
 
-                    // Type new interim text
-                    keyboard::type_text(&text)?;
-                    last_interim_length = text.chars().count();
-                }
-            }
-            TranscriptionResult::Final(text) => {
-                debug!("Received final transcription: '{}'", text);
-                if !text.trim().is_empty() {
-                    // Delete previous interim text if any
-                    if use_interim_results && last_interim_length > 0 {
-                        for _ in 0..last_interim_length {
-                            keyboard::press_key(enigo::Key::Backspace)?;
-                        }
-                        last_interim_length = 0;
-                    }
-
-                    info!("Final transcribed: {}", text);
-                    keyboard::type_text(&text)?;
-
-                    // Add a space after final transcription for better flow
-                    keyboard::type_text(" ")?;
-                }
+    // Use a select loop to handle both transcription results and recording state
+    tokio::select! {
+        result = crate::handlers::process_transcription_with_handler(transcription_rx, handler) => {
+            if let Err(e) = result {
+                error!("Transcription processing error: {}", e);
             }
         }
-
-        if !app_state.recording.load(Ordering::Relaxed) {
+        _ = async {
+            while app_state.recording.load(Ordering::Relaxed) {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        } => {
             debug!("Recording stopped, breaking loop");
-            break;
         }
     }
 

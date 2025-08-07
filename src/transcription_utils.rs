@@ -1,32 +1,9 @@
 use deepgram::common::stream_response::StreamResponse;
 
-use tracing::{debug, info};
-
 #[derive(Debug, Clone)]
 pub enum TranscriptionResult {
     Interim(String),
     Final(String),
-}
-
-/// Handle a simple transcription response (for examples)
-pub fn handle_simple_response(response: StreamResponse) -> Option<TranscriptionResult> {
-    if let StreamResponse::TranscriptResponse {
-        is_final, channel, ..
-    } = response
-    {
-        if let Some(alternative) = channel.alternatives.into_iter().next() {
-            let transcript = alternative.transcript.trim();
-            if !transcript.is_empty() {
-                return Some(if is_final {
-                    TranscriptionResult::Final(transcript.to_string())
-                } else {
-                    TranscriptionResult::Interim(transcript.to_string())
-                });
-            }
-        }
-    }
-
-    None
 }
 
 /// Handle a full transcription response (for main application)
