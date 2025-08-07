@@ -88,9 +88,9 @@ async fn start_transcription_only(app_state: AppState) -> Result<()> {
     // Start the audio stream
     audio_capture.stream.play()?;
 
-    debug!("Creating transcription stream");
+    debug!("Creating transcription stream with 16000 Hz sample rate");
     let transcriber = app_state.transcriber.read().unwrap().clone();
-    let transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
+    let transcription_rx = transcriber.transcribe_stream(audio_rx, 16000).await?;
     debug!("Transcription stream created, waiting for transcriptions");
 
     let handler = ConsoleTranscriptionHandler::new();

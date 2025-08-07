@@ -28,6 +28,7 @@ impl Transcriber {
     pub async fn transcribe_stream(
         self: std::sync::Arc<Self>,
         audio_rx: mpsc::Receiver<Vec<u8>>,
+        sample_rate: u32,
     ) -> Result<mpsc::Receiver<TranscriptionResult>> {
         debug!("Creating transcription stream");
         let (text_tx, text_rx) = mpsc::channel(10);
@@ -77,7 +78,7 @@ impl Transcriber {
         debug!("Starting WebSocket task with options: {:?}", options);
         tokio::spawn(async move {
             match self
-                .start_websocket_stream(options, audio_rx, text_tx)
+                .start_websocket_stream(options, audio_rx, text_tx, sample_rate)
                 .await
             {
                 Ok(_) => info!("WebSocket stream completed"),
@@ -93,6 +94,7 @@ impl Transcriber {
         options: Options,
         audio_rx: mpsc::Receiver<Vec<u8>>,
         text_tx: mpsc::Sender<TranscriptionResult>,
+        sample_rate: u32,
     ) -> Result<()> {
         info!("Starting WebSocket connection to Deepgram");
 
@@ -105,7 +107,7 @@ impl Transcriber {
             .transcription()
             .stream_request_with_options(options)
             .encoding(Encoding::Linear16)
-            .sample_rate(16000)
+            .sample_rate(sample_rate)
             .channels(1)
             .keep_alive() // Enable keep-alive
             .stream(audio_stream)

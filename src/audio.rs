@@ -7,11 +7,29 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-fn capture_audio(
+fn determine_audio_sample_rate(audio_config: &AudioConfig) -> Result<u32> {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or_eyre("No input device available")?;
+
+    let supported_configs_range = device
+        .supported_input_configs()
+        .wrap_err("Failed to get supported configs")?;
+
+    // Find the best matching config with priority for 16kHz, fallback to any available rate
+    let supported_config =
+        find_best_config_with_priority(supported_configs_range, audio_config.channels)?;
+
+    Ok(supported_config.config().sample_rate.0)
+}
+
+fn capture_audio_with_rate(
     audio_tx: mpsc::Sender<Vec<u8>>,
     recording: Arc<AtomicBool>,
     shutdown_token: CancellationToken,
     audio_config: AudioConfig,
+    sample_rate: u32,
 ) -> Result<()> {
     let host = cpal::default_host();
     let device = host
@@ -20,20 +38,17 @@ fn capture_audio(
 
     info!("Using input device: {}", device.name()?);
     info!(
-        "Requested config: {} channels, {} Hz",
-        audio_config.channels, audio_config.sample_rate
+        "Audio config: {} channels, {} Hz",
+        audio_config.channels, sample_rate
     );
 
     let supported_configs_range = device
         .supported_input_configs()
         .wrap_err("Failed to get supported configs")?;
 
-    // Find the best matching config based on our requirements
-    let supported_config = find_best_config(
-        supported_configs_range,
-        audio_config.sample_rate,
-        audio_config.channels,
-    )?;
+    // Find the best matching config with priority for 16kHz, fallback to any available rate
+    let supported_config =
+        find_best_config_with_priority(supported_configs_range, audio_config.channels)?;
 
     let config = supported_config.config();
     let sample_format = supported_config.sample_format();
@@ -42,6 +57,9 @@ fn capture_audio(
         "Audio config: {} channels, {} Hz, {:?}",
         config.channels, config.sample_rate.0, sample_format
     );
+
+    // Calculate samples per chunk based on actual sample rate
+    let samples_per_chunk = (sample_rate * audio_config.audio_chunk_ms / 1000) as usize;
 
     let err_fn = |err| error!("Audio stream error: {}", err);
 
@@ -121,10 +139,6 @@ fn capture_audio(
     };
 
     stream.play()?;
-
-    // Calculate samples per chunk based on config
-    let samples_per_chunk =
-        (audio_config.sample_rate * audio_config.audio_chunk_ms / 1000) as usize;
 
     // Buffer for collecting samples before conversion
     let mut sample_buffer = Vec::with_capacity(samples_per_chunk);
@@ -207,28 +221,41 @@ fn capture_audio(
     Ok(())
 }
 
+
 pub async fn start_recording(app_state: AppState) -> Result<()> {
     debug!("Starting recording process");
     let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
 
     let audio_config = app_state.config.read().unwrap().audio.clone();
     let app_state_audio = app_state.clone();
+
+    // First, determine the actual sample rate that will be used
+    let actual_sample_rate = determine_audio_sample_rate(&audio_config)?;
+    info!("Audio will use {} Hz sample rate", actual_sample_rate);
+
+    // Start audio capture task
     tokio::task::spawn_blocking(move || {
         debug!("Audio capture task started");
-        if let Err(e) = capture_audio(
+        if let Err(e) = capture_audio_with_rate(
             audio_tx,
             app_state_audio.recording.clone(),
             app_state_audio.shutdown_token.child_token(),
             audio_config,
+            actual_sample_rate,
         ) {
             error!("Audio capture error: {}", e);
         }
         debug!("Audio capture task ended");
     });
 
-    debug!("Creating transcription stream");
+    debug!(
+        "Creating transcription stream with {} Hz sample rate",
+        actual_sample_rate
+    );
     let transcriber = app_state.transcriber.read().unwrap().clone();
-    let transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
+    let transcription_rx = transcriber
+        .transcribe_stream(audio_rx, actual_sample_rate)
+        .await?;
     debug!("Transcription stream created, waiting for transcriptions");
 
     let use_interim_results = app_state
@@ -285,13 +312,13 @@ where
     Ok(stream)
 }
 
-fn find_best_config(
+fn find_best_config_with_priority(
     configs: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
-    target_sample_rate: u32,
     target_channels: u16,
 ) -> Result<cpal::SupportedStreamConfig> {
     let mut best_config = None;
     let mut best_score = f32::MAX;
+    let preferred_sample_rate = 16000u32; // Priority for 16kHz
 
     for config_range in configs {
         // Check if this config supports our channel count
@@ -299,20 +326,31 @@ fn find_best_config(
             continue;
         }
 
-        // Check if target sample rate is in range
         let min_rate = config_range.min_sample_rate().0;
         let max_rate = config_range.max_sample_rate().0;
 
-        let sample_rate = if target_sample_rate >= min_rate && target_sample_rate <= max_rate {
-            cpal::SampleRate(target_sample_rate)
-        } else if target_sample_rate < min_rate {
-            config_range.min_sample_rate()
+        // Try preferred rate first (16kHz)
+        let sample_rate = if preferred_sample_rate >= min_rate && preferred_sample_rate <= max_rate
+        {
+            cpal::SampleRate(preferred_sample_rate)
         } else {
-            config_range.max_sample_rate()
+            // Fallback: use the rate closest to 16kHz within the available range
+            if preferred_sample_rate < min_rate {
+                config_range.min_sample_rate()
+            } else {
+                config_range.max_sample_rate()
+            }
         };
 
         // Calculate score (lower is better)
-        let rate_diff = (sample_rate.0 as f32 - target_sample_rate as f32).abs();
+        // Heavily prioritize 16kHz, but allow fallbacks
+        let rate_diff = (sample_rate.0 as f32 - preferred_sample_rate as f32).abs();
+        let rate_score = if sample_rate.0 == preferred_sample_rate {
+            0.0 // Perfect match gets best score
+        } else {
+            rate_diff / 1000.0 // Fallback rates get penalized based on distance from 16kHz
+        };
+
         let format_score = match config_range.sample_format() {
             SampleFormat::F32 => 0.0,  // Preferred
             SampleFormat::I16 => 10.0, // Good
@@ -322,7 +360,7 @@ fn find_best_config(
             _ => 1000.0,               // Not supported
         };
 
-        let score = rate_diff / 1000.0 + format_score;
+        let score = rate_score + format_score;
 
         if score < best_score {
             best_score = score;
@@ -330,5 +368,12 @@ fn find_best_config(
         }
     }
 
-    best_config.ok_or_eyre("No compatible audio configuration found")
+    let config = best_config.ok_or_eyre("No compatible audio configuration found")?;
+    info!(
+        "Selected audio configuration: {} Hz (preferred: {} Hz)",
+        config.config().sample_rate.0,
+        preferred_sample_rate
+    );
+    Ok(config)
 }
+

@@ -50,6 +50,9 @@ watch:
 deb:
     cargo deb
 
+console-transcriber log-level="warn":
+    RUST_LOG={{ log-level }} cargo run --example simple-transcriber
+
 # Query Deepgram API costs for the last 24 hours
 deepgram-costs:
   #!/usr/bin/env bash
