@@ -109,6 +109,7 @@ impl Transcriber {
             .encoding(Encoding::Linear16)
             .sample_rate(sample_rate)
             .channels(1)
+            .interim_results(self.config.use_interim_results)
             .keep_alive() // Enable keep-alive
             .stream(audio_stream)
             .await?;

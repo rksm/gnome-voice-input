@@ -49,7 +49,7 @@ fn default_audio_chunk_ms() -> u32 {
 }
 
 fn default_use_interim_results() -> bool {
-    true
+    false
 }
 
 fn default_model() -> String {
@@ -89,7 +89,7 @@ impl Default for UiConfig {
 impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
-            use_interim_results: true,
+            use_interim_results: false,
             model: default_model(),
             language: default_language(),
             smart_format: default_smart_format(),

@@ -221,7 +221,6 @@ fn capture_audio_with_rate(
     Ok(())
 }
 
-
 pub async fn start_recording(app_state: AppState) -> Result<()> {
     debug!("Starting recording process");
     let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
@@ -376,4 +375,3 @@ fn find_best_config_with_priority(
     );
     Ok(config)
 }
-
