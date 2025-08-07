@@ -3,16 +3,11 @@ use deepgram::{
     Deepgram,
 };
 use eyre::Result;
-use futures::stream::{Stream, StreamExt};
+use futures::stream::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::config::TranscriptionConfig;
-
-#[derive(Debug, Clone)]
-pub enum TranscriptionResult {
-    Interim(String),
-    Final(String),
-}
+use crate::transcription_utils::{create_audio_stream, handle_full_response, TranscriptionResult};
 
 pub struct Transcriber {
     client: Deepgram,
@@ -148,91 +143,13 @@ impl Transcriber {
         response: deepgram::common::stream_response::StreamResponse,
         text_tx: &mpsc::Sender<TranscriptionResult>,
     ) -> Result<()> {
-        use deepgram::common::stream_response::StreamResponse;
-
-        match response {
-            StreamResponse::TranscriptResponse {
-                is_final, channel, ..
-            } => {
-                debug!("TranscriptResponse - is_final: {}", is_final);
-                debug!(
-                    "Processing transcript, alternatives count: {}",
-                    channel.alternatives.len()
-                );
-
-                // Extract transcript text from the channel
-                if let Some(alternative) = channel.alternatives.into_iter().next() {
-                    let transcript = alternative.transcript.trim();
-                    debug!(
-                        "Transcript text: '{}', confidence: {:.2}, is_final: {}",
-                        transcript, alternative.confidence, is_final
-                    );
-
-                    if !transcript.is_empty() {
-                        let result = if is_final {
-                            info!(
-                                "Final transcript: {} (confidence: {:.2})",
-                                transcript, alternative.confidence
-                            );
-                            TranscriptionResult::Final(transcript.to_string())
-                        } else if self.config.use_interim_results {
-                            debug!("Interim transcript: {}", transcript);
-                            TranscriptionResult::Interim(transcript.to_string())
-                        } else {
-                            // Skip interim results if disabled
-                            return Ok(());
-                        };
-
-                        if text_tx.send(result).await.is_err() {
-                            error!("Failed to send transcript - receiver dropped");
-                            return Err(eyre!("Text receiver dropped"));
-                        }
-                    } else {
-                        debug!("Transcript was empty, ignoring");
-                    }
-                } else {
-                    debug!("No alternatives in transcript response");
-                }
-            }
-            StreamResponse::UtteranceEndResponse { last_word_end, .. } => {
-                debug!("Utterance ended: last word end {:?}", last_word_end);
-            }
-            StreamResponse::SpeechStartedResponse { timestamp, .. } => {
-                debug!("Speech started at timestamp: {:?}", timestamp);
-            }
-            StreamResponse::TerminalResponse {
-                request_id,
-                created,
-                duration,
-                ..
-            } => {
-                debug!(
-                    "Terminal response: request_id={}, created={}, duration={:?}",
-                    request_id, created, duration
-                );
-            }
-            _ => {
-                debug!("Received unknown response type: {:?}", response);
+        if let Some(result) = handle_full_response(response, self.config.use_interim_results) {
+            if text_tx.send(result).await.is_err() {
+                error!("Failed to send transcript - receiver dropped");
+                return Err(eyre!("Text receiver dropped"));
             }
         }
 
         Ok(())
     }
-}
-
-// Convert mpsc::Receiver to a Stream that produces Result<Bytes, Error>
-fn create_audio_stream(
-    mut audio_rx: mpsc::Receiver<Vec<u8>>,
-) -> impl Stream<Item = Result<bytes::Bytes, std::io::Error>> {
-    futures::stream::poll_fn(move |cx| match audio_rx.poll_recv(cx) {
-        std::task::Poll::Ready(Some(data)) => {
-            trace!("Audio stream produced {} bytes", data.len());
-            std::task::Poll::Ready(Some(Ok(bytes::Bytes::from(data))))
-        }
-        std::task::Poll::Ready(None) => {
-            debug!("Audio stream ended");
-            std::task::Poll::Ready(None)
-        }
-        std::task::Poll::Pending => std::task::Poll::Pending,
-    })
 }

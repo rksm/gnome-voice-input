@@ -6,6 +6,14 @@ authors = ["GNOME Voice Input Contributors"]
 description = "Voice input utility for GNOME desktop using Deepgram"
 license = "MIT"
 
+[[example]]
+name = "simple-transcriber"
+path = "examples/simple-transcriber.rs"
+
+[[example]]
+name = "test-transcription"
+path = "examples/test-transcription.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

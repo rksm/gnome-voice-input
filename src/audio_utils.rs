@@ -1,21 +1,26 @@
-use crate::{
-    config::AudioConfig, keyboard, state::AppState, transcription_utils::TranscriptionResult,
-};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Sample, SampleFormat};
-use eyre::{OptionExt, Result, WrapErr};
+use eyre::{OptionExt, Result};
+use futures::stream::Stream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-fn capture_audio(
-    audio_tx: mpsc::Sender<Vec<u8>>,
-    recording: Arc<AtomicBool>,
-    shutdown_token: CancellationToken,
-    audio_config: AudioConfig,
-) -> Result<()> {
+use crate::config::AudioConfig;
+
+pub struct AudioCapture {
+    pub sample_rx: std::sync::mpsc::Receiver<f32>,
+    pub stream: cpal::Stream,
+}
+
+pub struct SimpleAudioCapture {
+    pub sample_rx: std::sync::mpsc::Receiver<f32>,
+    pub stream: cpal::Stream,
+}
+
+/// Initialize audio capture with the given configuration
+pub fn init_audio_capture(audio_config: &AudioConfig) -> Result<AudioCapture> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -27,9 +32,7 @@ fn capture_audio(
         audio_config.channels, audio_config.sample_rate
     );
 
-    let supported_configs_range = device
-        .supported_input_configs()
-        .wrap_err("Failed to get supported configs")?;
+    let supported_configs_range = device.supported_input_configs()?;
 
     // Find the best matching config based on our requirements
     let supported_config = find_best_config(
@@ -47,19 +50,54 @@ fn capture_audio(
     );
 
     let err_fn = |err| error!("Audio stream error: {}", err);
-
-    // Create channel for audio samples
     let (sample_tx, sample_rx) = std::sync::mpsc::channel::<f32>();
 
-    let stream = match sample_format {
-        SampleFormat::F32 => {
-            build_input_stream::<f32>(&device, &config, sample_tx.clone(), err_fn)?
-        }
+    let stream = build_stream_for_format(sample_format, &device, &config, sample_tx, err_fn)?;
+
+    Ok(AudioCapture { sample_rx, stream })
+}
+
+/// Initialize simple audio capture with default settings
+pub fn init_simple_audio_capture() -> Result<SimpleAudioCapture> {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or_eyre("No input device available")?;
+
+    println!("Using input device: {}", device.name()?);
+
+    let config = device.default_input_config()?;
+    let sample_format = config.sample_format();
+    let config = config.config();
+
+    println!(
+        "Audio config: {} channels, {} Hz, {:?}",
+        config.channels, config.sample_rate.0, sample_format
+    );
+
+    let err_fn = |err| error!("Audio stream error: {}", err);
+    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<f32>();
+
+    let stream = build_stream_for_format(sample_format, &device, &config, sample_tx, err_fn)?;
+
+    Ok(SimpleAudioCapture { sample_rx, stream })
+}
+
+/// Build appropriate input stream based on sample format
+fn build_stream_for_format(
+    sample_format: SampleFormat,
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    sample_tx: std::sync::mpsc::Sender<f32>,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static + Clone,
+) -> Result<cpal::Stream> {
+    match sample_format {
+        SampleFormat::F32 => build_input_stream::<f32>(device, config, sample_tx, err_fn),
         SampleFormat::I16 => {
             let (tx_i16, rx_i16) = std::sync::mpsc::channel::<i16>();
-            let stream = build_input_stream::<i16>(&device, &config, tx_i16, err_fn)?;
+            let stream = build_input_stream::<i16>(device, config, tx_i16, err_fn)?;
 
-            let tx_f32 = sample_tx.clone();
+            let tx_f32 = sample_tx;
             std::thread::spawn(move || {
                 while let Ok(sample) = rx_i16.recv() {
                     let normalized = sample.to_float_sample();
@@ -69,13 +107,13 @@ fn capture_audio(
                 }
             });
 
-            stream
+            Ok(stream)
         }
         SampleFormat::U16 => {
             let (tx_u16, rx_u16) = std::sync::mpsc::channel::<u16>();
-            let stream = build_input_stream::<u16>(&device, &config, tx_u16, err_fn)?;
+            let stream = build_input_stream::<u16>(device, config, tx_u16, err_fn)?;
 
-            let tx_f32 = sample_tx.clone();
+            let tx_f32 = sample_tx;
             std::thread::spawn(move || {
                 while let Ok(sample) = rx_u16.recv() {
                     let normalized = sample.to_float_sample();
@@ -85,13 +123,13 @@ fn capture_audio(
                 }
             });
 
-            stream
+            Ok(stream)
         }
         SampleFormat::U8 => {
             let (tx_u8, rx_u8) = std::sync::mpsc::channel::<u8>();
-            let stream = build_input_stream::<u8>(&device, &config, tx_u8, err_fn)?;
+            let stream = build_input_stream::<u8>(device, config, tx_u8, err_fn)?;
 
-            let tx_f32 = sample_tx.clone();
+            let tx_f32 = sample_tx;
             std::thread::spawn(move || {
                 while let Ok(sample) = rx_u8.recv() {
                     // Convert U8 (0-255) to f32 (-1.0 to 1.0)
@@ -102,13 +140,13 @@ fn capture_audio(
                 }
             });
 
-            stream
+            Ok(stream)
         }
         SampleFormat::I32 => {
             let (tx_i32, rx_i32) = std::sync::mpsc::channel::<i32>();
-            let stream = build_input_stream::<i32>(&device, &config, tx_i32, err_fn)?;
+            let stream = build_input_stream::<i32>(device, config, tx_i32, err_fn)?;
 
-            let tx_f32 = sample_tx.clone();
+            let tx_f32 = sample_tx;
             std::thread::spawn(move || {
                 while let Ok(sample) = rx_i32.recv() {
                     let normalized = sample.to_float_sample();
@@ -118,34 +156,31 @@ fn capture_audio(
                 }
             });
 
-            stream
+            Ok(stream)
         }
-        _ => bail!("Unsupported sample format: {:?}", sample_format),
-    };
+        _ => Err(eyre::eyre!(
+            "Unsupported sample format: {:?}",
+            sample_format
+        )),
+    }
+}
 
-    stream.play()?;
-
-    // Calculate samples per chunk based on config
-    let samples_per_chunk =
-        (audio_config.sample_rate * audio_config.audio_chunk_ms / 1000) as usize;
-
-    // Buffer for collecting samples before conversion
+/// Capture and process audio samples into chunks
+pub fn process_audio_chunks(
+    sample_rx: std::sync::mpsc::Receiver<f32>,
+    audio_tx: mpsc::Sender<Vec<u8>>,
+    recording: Arc<AtomicBool>,
+    samples_per_chunk: usize,
+) -> Result<()> {
     let mut sample_buffer = Vec::with_capacity(samples_per_chunk);
     let mut total_samples_sent = 0u64;
     let mut chunks_sent = 0u64;
 
     loop {
-        if shutdown_token.is_cancelled() {
-            info!("Audio capture shutting down");
+        if !recording.load(Ordering::Relaxed) {
             break;
         }
 
-        if !recording.load(std::sync::atomic::Ordering::Relaxed) {
-            debug!("Recording stopped in audio capture");
-            break;
-        }
-
-        // Use recv_timeout to avoid busy-waiting
         match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
             Ok(sample) => {
                 sample_buffer.push(sample);
@@ -171,7 +206,7 @@ fn capture_audio(
                     }
 
                     total_samples_sent += sample_buffer.len() as u64;
-                    trace!(
+                    debug!(
                         "Sending audio chunk #{}: {} samples ({} bytes), total sent: {} samples",
                         chunks_sent,
                         sample_buffer.len(),
@@ -210,85 +245,7 @@ fn capture_audio(
     Ok(())
 }
 
-pub async fn start_recording(app_state: AppState) -> Result<()> {
-    debug!("Starting recording process");
-    let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(100);
-
-    let audio_config = app_state.config.read().unwrap().audio.clone();
-    let app_state_audio = app_state.clone();
-    tokio::task::spawn_blocking(move || {
-        debug!("Audio capture task started");
-        if let Err(e) = capture_audio(
-            audio_tx,
-            app_state_audio.recording.clone(),
-            app_state_audio.shutdown_token.child_token(),
-            audio_config,
-        ) {
-            error!("Audio capture error: {}", e);
-        }
-        debug!("Audio capture task ended");
-    });
-
-    debug!("Creating transcription stream");
-    let transcriber = app_state.transcriber.read().unwrap().clone();
-    let mut transcription_rx = transcriber.transcribe_stream(audio_rx).await?;
-    debug!("Transcription stream created, waiting for transcriptions");
-
-    let use_interim_results = app_state
-        .config
-        .read()
-        .unwrap()
-        .transcription
-        .use_interim_results;
-    let mut last_interim_length = 0;
-
-    while let Some(result) = transcription_rx.recv().await {
-        match result {
-            TranscriptionResult::Interim(text) => {
-                debug!("Received interim transcription: '{}'", text);
-                if use_interim_results && !text.trim().is_empty() {
-                    // Delete previous interim text by sending backspaces
-                    if last_interim_length > 0 {
-                        for _ in 0..last_interim_length {
-                            keyboard::press_key(enigo::Key::Backspace)?;
-                        }
-                    }
-
-                    // Type new interim text
-                    keyboard::type_text(&text)?;
-                    last_interim_length = text.chars().count();
-                }
-            }
-            TranscriptionResult::Final(text) => {
-                debug!("Received final transcription: '{}'", text);
-                if !text.trim().is_empty() {
-                    // Delete previous interim text if any
-                    if use_interim_results && last_interim_length > 0 {
-                        for _ in 0..last_interim_length {
-                            keyboard::press_key(enigo::Key::Backspace)?;
-                        }
-                        last_interim_length = 0;
-                    }
-
-                    info!("Final transcribed: {}", text);
-                    keyboard::type_text(&text)?;
-
-                    // Add a space after final transcription for better flow
-                    keyboard::type_text(" ")?;
-                }
-            }
-        }
-
-        if !app_state.recording.load(Ordering::Relaxed) {
-            debug!("Recording stopped, breaking loop");
-            break;
-        }
-    }
-
-    debug!("Transcription loop ended");
-    Ok(())
-}
-
+/// Build input stream for a specific sample type
 fn build_input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -314,6 +271,7 @@ where
     Ok(stream)
 }
 
+/// Find best audio configuration based on requirements
 fn find_best_config(
     configs: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
     target_sample_rate: u32,
@@ -360,4 +318,70 @@ fn find_best_config(
     }
 
     best_config.ok_or_eyre("No compatible audio configuration found")
+}
+
+/// Process audio samples for simple use cases
+pub fn process_simple_audio(
+    sample_rx: std::sync::mpsc::Receiver<f32>,
+    audio_tx: mpsc::Sender<Vec<u8>>,
+    recording: Arc<AtomicBool>,
+) -> Result<()> {
+    let samples_per_chunk = (16000 * 25 / 1000) as usize; // 25ms chunks at 16kHz
+    let mut sample_buffer = Vec::with_capacity(samples_per_chunk);
+
+    loop {
+        if !recording.load(Ordering::Relaxed) {
+            break;
+        }
+
+        match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
+            Ok(sample) => {
+                sample_buffer.push(sample);
+
+                // Continue collecting samples up to chunk size
+                while sample_buffer.len() < samples_per_chunk {
+                    match sample_rx.try_recv() {
+                        Ok(s) => sample_buffer.push(s),
+                        Err(_) => break,
+                    }
+                }
+
+                // Send chunk if we have enough samples
+                if sample_buffer.len() >= samples_per_chunk {
+                    // Convert f32 samples to i16 (Linear16) format
+                    let mut i16_buffer = Vec::with_capacity(sample_buffer.len() * 2);
+                    for &f32_sample in &sample_buffer {
+                        let i16_sample = (f32_sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                        i16_buffer.extend_from_slice(&i16_sample.to_le_bytes());
+                    }
+
+                    if audio_tx.blocking_send(i16_buffer).is_err() {
+                        break;
+                    }
+                    sample_buffer.clear();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert mpsc::Receiver to a Stream that produces Result<Bytes, Error>
+pub fn create_audio_stream(
+    mut audio_rx: mpsc::Receiver<Vec<u8>>,
+) -> impl Stream<Item = Result<bytes::Bytes, std::io::Error>> {
+    futures::stream::poll_fn(move |cx| match audio_rx.poll_recv(cx) {
+        std::task::Poll::Ready(Some(data)) => {
+            debug!("Audio stream produced {} bytes", data.len());
+            std::task::Poll::Ready(Some(Ok(bytes::Bytes::from(data))))
+        }
+        std::task::Poll::Ready(None) => {
+            debug!("Audio stream ended");
+            std::task::Poll::Ready(None)
+        }
+        std::task::Poll::Pending => std::task::Poll::Pending,
+    })
 }

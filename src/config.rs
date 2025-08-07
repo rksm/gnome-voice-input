@@ -1,8 +1,9 @@
 use dirs::config_dir;
-use eyre::{OptionExt, Result, WrapErr};
+use eyre::{bail, OptionExt, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {

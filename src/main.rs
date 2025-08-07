@@ -12,12 +12,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app_manager;
 mod audio;
+mod audio_utils;
 mod config;
 mod config_watcher;
 mod hotkey;
 mod keyboard;
 mod state;
 mod transcription;
+mod transcription_utils;
 mod tray;
 
 use app_manager::initialize_app_components;

@@ -11,7 +11,6 @@ pub fn type_text(text: &str) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn press_key(key: Key) -> Result<()> {
     let mut enigo = Enigo::new(&Settings::default()).wrap_err("Failed to initialize Enigo")?;
 
