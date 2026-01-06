@@ -5,6 +5,9 @@ default:
 build:
     cargo build
 
+build-nix:
+    nix build -L .#gnome-voice-input
+
 # Run the application
 run *args="":
     RUST_LOG=debug cargo run --release -- {{ args }}
